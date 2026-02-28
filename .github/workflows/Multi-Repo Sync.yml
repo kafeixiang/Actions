@@ -29,7 +29,7 @@ jobs:
           - name: "ClashMetaForAndroid"
             fork: "kafeixiang/ClashMetaForAndroid"
             upstream: "https://github.com/MetaCubeX/ClashMetaForAndroid.git"
-            mappings: "main:main update-dependencies:update-dependencies!"
+            mappings: "main:main update-dependencies:update-dependencies! update-dependencies:dev"
 
           - name: "sing-box"
             fork: "kafeixiang/sing-box"
@@ -132,8 +132,8 @@ jobs:
                 echo ">>>> [冲突] 变基失败！正在处理冲突分支..."
                 git rebase --abort # 撤销失败的变基，恢复分支原状
                 
-                # A. 清理旧的冲突分支（避免堆积）
-                OLD_CONFLICT_BRS=$(git branch -r --list "origin/sync-alert-${UP_BR}-*" 2>/dev/null)
+                # A. 清理旧的冲突分支（增加本地分支名区分，避免误删其他分支的 PR）
+                OLD_CONFLICT_BRS=$(git branch -r --list "origin/sync-alert-${UP_BR}-to-${LOCAL_BR}-*" 2>/dev/null)
                 if [ -n "$OLD_CONFLICT_BRS" ]; then
                   echo ">>>> [清理] 删除旧的冲突分支..."
                   for old_br in $OLD_CONFLICT_BRS; do
@@ -143,20 +143,19 @@ jobs:
                   done
                 fi
                 
-                # B. 创建新的冲突分支（基于最新上游代码）
-                TEMP_BR="sync-alert-${UP_BR}-$(date +%s)"
+                # B. 创建新的冲突分支（增加本地分支名区分）
+                TEMP_BR="sync-alert-${UP_BR}-to-${LOCAL_BR}-$(date +%s)"
                 git checkout -b $TEMP_BR upstream/$UP_BR
                 git push origin $TEMP_BR
                 
                 # C. 使用 [gh pr create](https://cli.github.com) 发起 PR 提醒
-                # 注意：--repo 明确指定为你自己的 Fork 仓库，不会打扰原作者
                 gh pr create \
                   --repo "${{ matrix.fork }}" \
                   --base "$LOCAL_BR" \
                   --head "$TEMP_BR" \
-                  --title "🚨 冲突提醒：${{ matrix.name }} 同步受阻" \
+                  --title "🚨 冲突提醒：${{ matrix.name }} [$LOCAL_BR] 同步受阻" \
                   --body "自动化脚本发现上游 $UP_BR 分支与你本地的 $LOCAL_BR 存在代码冲突。你可以合并此 PR 来完成同步，或在本地手动解决冲突。注意：此 PR 仅存在于你自己的仓库内部。" \
-                  2>/dev/null || echo ">>>> [提示] PR 已存在，无需重复创建"
+                  2>/dev/null || echo ">>>> [提示] PR 已存在或创建失败"
               fi
             fi
           done
