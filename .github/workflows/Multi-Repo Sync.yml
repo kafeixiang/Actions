@@ -46,20 +46,10 @@ jobs:
             upstream: "https://github.com/2dust/v2rayN.git"
             mappings: "master:dev"
 
-         # - name: "v2rayNX"
-          #  fork: "kafeixiang/v2rayNX"
-           # upstream: "https://github.com/2dust/v2rayN.git"
-           # mappings: "master:master"
-            
           - name: "NekoBoxForAndroid"
             fork: "kafeixiang/NekoBoxForAndroid"
             upstream: "https://github.com/MatsuriDayo/NekoBoxForAndroid.git"
             mappings: "main:dev"
-
-        #  - name: "Xray"
-         #   fork: "kafeixiang/Xray"
-         #   upstream: "https://github.com/XTLS/Xray-core.git
-          #  mappings: "main:main"
 
           - name: "FlClash"
             fork: "kafeixiang/FlClash"
@@ -112,10 +102,11 @@ jobs:
             echo ">>>> [${{ matrix.name }}] 同步分支 $UP_BR 到 $LOCAL_BR (模式: $METHOD)"
             
             # 5. 获取上游最新代码
-            git fetch upstream $UP_BR
+            git fetch upstream $UP_BR --quiet
             
-            # 6. 检出本地分支（若不存在则基于上游创建新分支）
-            git checkout $LOCAL_BR || git checkout -b $LOCAL_BR upstream/$UP_BR
+            # 6. 检出本地分支并确保与远程 origin 同步
+            git fetch origin $LOCAL_BR --quiet || true
+            git checkout -B $LOCAL_BR origin/$LOCAL_BR 2>/dev/null || git checkout -b $LOCAL_BR upstream/$UP_BR
 
             if [ "$METHOD" == "reset" ]; then
               # --- 执行 Hard Reset（强制覆盖） ---
@@ -127,35 +118,52 @@ jobs:
               if git rebase upstream/$UP_BR; then
                 git push origin $LOCAL_BR --force # 变基成功，强推
                 echo ">>>> [成功] 分支 $LOCAL_BR 已完成变基同步"
+                
+                # 同步成功后，清理该分支在本仓库旧的冲突 PR（如果存在）
+                PR_NUMS=$(gh pr list --repo "${{ matrix.fork }}" --base "$LOCAL_BR" --json number,title --jq ".[] | select(.title | contains(\"冲突提醒\")) | .number")
+                if [ -n "$PR_NUMS" ]; then
+                  for num in $PR_NUMS; do
+                    echo ">>>> [清理] 同步已恢复，正在关闭 PR #$num"
+                    gh pr close --repo "${{ matrix.fork }}" "$num" --delete-branch || true
+                  done
+                fi
               else
                 # --- 发生冲突时的安全处理 ---
-                echo ">>>> [冲突] 变基失败！正在处理冲突分支..."
+                echo ">>>> [冲突] $LOCAL_BR 变基失败！正在处理冲突提醒..."
                 git rebase --abort # 撤销失败的变基，恢复分支原状
                 
-                # A. 清理旧的冲突分支（增加本地分支名区分，避免误删其他分支的 PR）
-                OLD_CONFLICT_BRS=$(git branch -r --list "origin/sync-alert-${UP_BR}-to-${LOCAL_BR}-*" 2>/dev/null)
-                if [ -n "$OLD_CONFLICT_BRS" ]; then
-                  echo ">>>> [清理] 删除旧的冲突分支..."
-                  for old_br in $OLD_CONFLICT_BRS; do
-                    old_br_name=$(basename "$old_br")
-                    git push origin --delete "$old_br_name" 2>/dev/null || true
-                    echo ">>>> [已删除] $old_br_name"
+                # A. 查找并清理该本地分支旧的冲突 PR 和临时分支（仅限本仓库内部）
+                PR_NUMS=$(gh pr list --repo "${{ matrix.fork }}" --base "$LOCAL_BR" --json number,title --jq ".[] | select(.title | contains(\"冲突提醒\")) | .number")
+                if [ -n "$PR_NUMS" ]; then
+                  for num in $PR_NUMS; do
+                    gh pr close --repo "${{ matrix.fork }}" "$num" --delete-branch || true
                   done
                 fi
                 
-                # B. 创建新的冲突分支（增加本地分支名区分）
-                TEMP_BR="sync-alert-${UP_BR}-to-${LOCAL_BR}-$(date +%s)"
+                # B. 创建新的冲突分支并推送到本仓库（origin）
+                TEMP_BR="sync-alert-${LOCAL_BR}-$(date +%s)"
                 git checkout -b $TEMP_BR upstream/$UP_BR
                 git push origin $TEMP_BR
                 
-                # C. 使用 [gh pr create](https://cli.github.com) 发起 PR 提醒
+                # C. 使用 [gh pr create] 发起 PR 提醒
+                # 核心保证：--repo 明确指定为你自己的 Fork 仓库，PR 只会在你自己的仓库中生成，不会打扰原作者
                 gh pr create \
                   --repo "${{ matrix.fork }}" \
                   --base "$LOCAL_BR" \
                   --head "$TEMP_BR" \
                   --title "🚨 冲突提醒：${{ matrix.name }} [$LOCAL_BR] 同步受阻" \
-                  --body "自动化脚本发现上游 $UP_BR 分支与你本地的 $LOCAL_BR 存在代码冲突。你可以合并此 PR 来完成同步，或在本地手动解决冲突。注意：此 PR 仅存在于你自己的仓库内部。" \
-                  2>/dev/null || echo ">>>> [提示] PR 已存在或创建失败"
+                  --body "自动化脚本发现上游 $UP_BR 分支与你本地的 $LOCAL_BR 存在代码冲突。
+                  
+                  **此 PR 仅用于提醒，且仅存在于你自己的仓库中。**
+                  
+                  **如何处理：**
+                  1. 在本地切换到 \`$LOCAL_BR\` 分支。
+                  2. 执行 \`git pull upstream $UP_BR --rebase\`。
+                  3. 解决冲突后推送到 origin。
+                  4. 下次同步成功时，此 PR 将会自动关闭并删除临时分支。"
               fi
             fi
           done
+          
+          # 移除 exit 1，避免触发 GitHub 的官方失败提醒邮件
+          echo ">>>> [完成] 所有分支已尝试同步处理。"
