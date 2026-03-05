@@ -63,8 +63,8 @@ jobs:
 
           - name: "husi"
             fork: "kafeixiang/husi"
-            upstream: "https://github.com/xchacha20-poly1305/husi.git"
-            mappings: "dev:dev-2 dev:dev-zt-16 dev:TB3"
+            upstream: "https://codeberg.org/xchacha20-poly1305/husi.git"
+            mappings: "dev:dev! dev:dev-2 dev:dev-zt-16 dev:TB3"
 
     steps:
       # 第一步：拉取你的 Fork 仓库
