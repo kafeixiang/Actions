@@ -24,7 +24,7 @@ jobs:
           - name: "mihomo"
             fork: "kafeixiang/mihomo"
             upstream: "https://github.com/MetaCubeX/mihomo.git"
-            mappings: "Meta:Meta Alpha:Alpha!" # Meta 变基同步，Alpha 强制同步
+            mappings: "Meta:Meta Alpha:Alpha! Alpha:FlClash" # Meta 变基同步，Alpha 强制同步
 
           - name: "ClashMetaForAndroid"
             fork: "kafeixiang/ClashMetaForAndroid"
