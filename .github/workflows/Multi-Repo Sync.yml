@@ -54,7 +54,7 @@ jobs:
           - name: "FlClash"
             fork: "kafeixiang/FlClash"
             upstream: "https://github.com/chen08209/FlClash.git"
-            mappings: "main:main dev:dev! dev:dev-cs dev:dev-core"
+            mappings: "main:main dev:dev! dev:dev-cs dev:dev-core dve:update-dependencies"
 
           - name: "Exclave"
             fork: "kafeixiang/Exclave"
