@@ -34,7 +34,7 @@ jobs:
           - name: "sing-box"
             fork: "kafeixiang/sing-box"
             upstream: "https://github.com/SagerNet/sing-box.git"
-            mappings: "stable:main-next"
+            mappings: "stable:stable"
 
           - name: "v2rayNG"
             fork: "kafeixiang/v2rayNG"
