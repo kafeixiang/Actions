@@ -46,6 +46,11 @@ jobs:
             upstream: "https://github.com/2dust/v2rayN.git"
             mappings: "master:dev"
 
+          - name: "v2rayNX"
+            fork: "kafeixiang/v2rayNX"
+            upstream: "https://github.com/2dust/v2rayN.git"
+            mappings: "master:master"
+
           - name: "NekoBoxForAndroid"
             fork: "kafeixiang/NekoBoxForAndroid"
             upstream: "https://github.com/MatsuriDayo/NekoBoxForAndroid.git"
