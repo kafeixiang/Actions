@@ -71,7 +71,7 @@ jobs:
             upstream: "https://codeberg.org/xchacha20-poly1305/husi.git"
             mappings: "dev:dev! dev:dev-2 dev:dev-zt-16 dev:TB3"
 
-          - name: "husi"
+          - name: "husi2"
             fork: "kafeixiang/husi2"
             upstream: "https://codeberg.org/xchacha20-poly1305/husi.git"
             mappings: "dev:dev! dev:dev-2 dev:dev-zt-16 dev:TB3"
