@@ -146,36 +146,53 @@ jobs:
                   fi
                 done
               else
-                # 发生冲突
-                echo ">>>> [冲突] $LOCAL_BR 变基失败，正在创建冲突提醒 PR..."
+                echo ">>>> [冲突] $LOCAL_BR 变基失败，正在判断冲突类型..."
                 git rebase --abort
-                
-                # A. 清理该分支旧的冲突 PR
+
+                # ==== breaking change 自动修复 BEGIN ====
+                COMMITS=$(git rev-list origin/$LOCAL_BR ^upstream/$UP_BR)
+                AUTO_FIX_BRANCH="auto-fix-$LOCAL_BR-$(date +%s)"
+                git checkout -b $AUTO_FIX_BRANCH upstream/$UP_BR
+                AUTO_FIX_PASS="true"
+                for commit in $COMMITS; do
+                  if ! git cherry-pick $commit; then
+                    AUTO_FIX_PASS="false"
+                    git cherry-pick --abort
+                    break
+                  fi
+                done
+
+                if [ "$AUTO_FIX_PASS" == "true" ]; then
+                  git push origin $AUTO_FIX_BRANCH --force
+                  gh pr create \
+                    --repo "${{ matrix.fork }}" \
+                    --base "$LOCAL_BR" \
+                    --head "$AUTO_FIX_BRANCH" \
+                    --title "🤖 自动修复：${{ matrix.name }} [$LOCAL_BR] 基于上游新代码自动叠加你的提交" \
+                    --body "自动识别为 breaking change（你的本地提交无冲突），已用上游新代码 + 你的commit自动修复。如无异议直接合并。"
+                  git checkout $LOCAL_BR
+                  continue
+                fi
+                git checkout $LOCAL_BR
+                # ==== breaking change 自动修复 END ====
+
+                # ========== 原有冲突提醒 PR 处理继续 ==========
                 gh pr list --repo "${{ matrix.fork }}" --base "$LOCAL_BR" --state open --json number,title | jq -c '.[]' | while read -r pr; do
                   if [[ $(echo "$pr" | jq -r '.title') == *"冲突提醒"* ]]; then
                     PR_NUM=$(echo "$pr" | jq -r '.number')
                     gh pr close --repo "${{ matrix.fork }}" "$PR_NUM" --delete-branch || true
                   fi
                 done
-                
-                # B. 创建新的临时冲突分支（包含本地分支名以示区分）
+
                 TEMP_BR="sync-alert-${LOCAL_BR}-$(date +%s)"
                 git checkout -b $TEMP_BR upstream/$UP_BR
                 git push origin $TEMP_BR
-                
-                # C. 创建 PR 到对应的本地分支
                 gh pr create \
                   --repo "${{ matrix.fork }}" \
                   --base "$LOCAL_BR" \
                   --head "$TEMP_BR" \
                   --title "🚨 冲突提醒：${{ matrix.name }} [$LOCAL_BR] 同步受阻" \
-                  --body "自动化脚本发现上游 $UP_BR 分支与本地 $LOCAL_BR 分支存在冲突。
-                  
-                  **处理建议：**
-                  1. 在本地切换到 \`$LOCAL_BR\` 分支。
-                  2. 执行 \`git pull upstream $UP_BR --rebase\`。
-                  3. 解决冲突后推送到 origin。
-                  4. 下次同步成功时，此 PR 会自动关闭并删除临时分支。"
+                  --body "自动化脚本发现上游 $UP_BR 分支与本地 $LOCAL_BR 分支存在冲突。\n\n**处理建议：**\n1. 在本地切换到 \`$LOCAL_BR\` 分支。\n2. 执行 \`git pull upstream $UP_BR --rebase\`。\n3. 解决冲突后推送到 origin。\n4. 下次同步成功时，此 PR 会自动关闭并删除临时分支。"
               fi
             fi
           done
