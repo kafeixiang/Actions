@@ -163,14 +163,15 @@ jobs:
                 done
 
                 if [ "$AUTO_FIX_PASS" == "true" ]; then
+                  echo ">>>> [自动修复] breaking change 导致的 rebase 冲突已自动修复"
                   git push origin $AUTO_FIX_BRANCH --force
-                  gh pr create \
-                    --repo "${{ matrix.fork }}" \
-                    --base "$LOCAL_BR" \
-                    --head "$AUTO_FIX_BRANCH" \
-                    --title "🤖 自动修复：${{ matrix.name }} [$LOCAL_BR] 基于上游新代码自动叠加你的提交" \
-                    --body "自动识别为 breaking change（你的本地提交无冲突），已用上游新代码 + 你的commit自动修复。如无异议直接合并。"
+                  # 直接强推回原分支
                   git checkout $LOCAL_BR
+                  git reset --hard $AUTO_FIX_BRANCH
+                  git push origin $LOCAL_BR --force
+                  echo ">>>> [成功] $LOCAL_BR 已自动同步为上游新代码 + 你的提交"
+                  # 删除临时分支
+                  git push origin --delete $AUTO_FIX_BRANCH || true
                   continue
                 fi
                 git checkout $LOCAL_BR
