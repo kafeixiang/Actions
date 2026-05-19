@@ -147,13 +147,16 @@ jobs:
                 done
               else
                 echo ">>>> [冲突] $LOCAL_BR 变基失败，正在判断冲突类型..."
+                
+                # ⭐ 关键修复：在 rebase --abort 之前获取本地提交列表
+                COMMITS=$(git rev-list origin/$LOCAL_BR ^upstream/$UP_BR)
                 git rebase --abort
 
                 # ==== breaking change 自动修复 BEGIN ====
-                COMMITS=$(git rev-list origin/$LOCAL_BR ^upstream/$UP_BR)
                 AUTO_FIX_BRANCH="auto-fix-$LOCAL_BR-$(date +%s)"
                 git checkout -b $AUTO_FIX_BRANCH upstream/$UP_BR
                 AUTO_FIX_PASS="true"
+                
                 for commit in $COMMITS; do
                   if ! git cherry-pick $commit; then
                     AUTO_FIX_PASS="false"
@@ -165,12 +168,10 @@ jobs:
                 if [ "$AUTO_FIX_PASS" == "true" ]; then
                   echo ">>>> [自动修复] breaking change 导致的 rebase 冲突已自动修复"
                   git push origin $AUTO_FIX_BRANCH --force
-                  # 直接强推回原分支
                   git checkout $LOCAL_BR
                   git reset --hard $AUTO_FIX_BRANCH
                   git push origin $LOCAL_BR --force
                   echo ">>>> [成功] $LOCAL_BR 已自动同步为上游新代码 + 你的提交"
-                  # 删除临时分支
                   git push origin --delete $AUTO_FIX_BRANCH || true
                   continue
                 fi
