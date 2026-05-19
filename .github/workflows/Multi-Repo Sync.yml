@@ -84,7 +84,7 @@ jobs:
     steps:
       # 第一步：拉取你的 Fork 仓库
       - name: Checkout Fork
-        uses: actions/checkout@v4
+        uses: actions/checkout@v4.2.2
         with:
           repository: ${{ matrix.fork }}
           token: ${{ secrets.PAT_TOKEN }} # 使用你设置的个人访问令牌
@@ -165,6 +165,7 @@ jobs:
                   fi
                 done
 
+                # ⭐ 修复：用 if-else 代替 continue，避免嵌套循环问题
                 if [ "$AUTO_FIX_PASS" == "true" ]; then
                   echo ">>>> [自动修复] breaking change 导致的 rebase 冲突已自动修复"
                   git push origin $AUTO_FIX_BRANCH --force
@@ -173,28 +174,28 @@ jobs:
                   git push origin $LOCAL_BR --force
                   echo ">>>> [成功] $LOCAL_BR 已自动同步为上游新代码 + 你的提交"
                   git push origin --delete $AUTO_FIX_BRANCH || true
-                  continue
+                else
+                  # ========== 自动修复失败，走原有冲突提醒 PR 处理 ==========
+                  git checkout $LOCAL_BR
+                  # ==== breaking change 自动修复 END ====
+                  
+                  gh pr list --repo "${{ matrix.fork }}" --base "$LOCAL_BR" --state open --json number,title | jq -c '.[]' | while read -r pr; do
+                    if [[ $(echo "$pr" | jq -r '.title') == *"冲突提醒"* ]]; then
+                      PR_NUM=$(echo "$pr" | jq -r '.number')
+                      gh pr close --repo "${{ matrix.fork }}" "$PR_NUM" --delete-branch || true
+                    fi
+                  done
+
+                  TEMP_BR="sync-alert-${LOCAL_BR}-$(date +%s)"
+                  git checkout -b $TEMP_BR upstream/$UP_BR
+                  git push origin $TEMP_BR
+                  gh pr create \
+                    --repo "${{ matrix.fork }}" \
+                    --base "$LOCAL_BR" \
+                    --head "$TEMP_BR" \
+                    --title "🚨 冲突提醒：${{ matrix.name }} [$LOCAL_BR] 同步受阻" \
+                    --body "自动化脚本发现上游 $UP_BR 分支与本地 $LOCAL_BR 分支存在冲突。\n\n**处理建议：**\n1. 在本地切换到 \`$LOCAL_BR\` 分支。\n2. 执行 \`git pull upstream $UP_BR --rebase\`。\n3. 解决冲突后推送到 origin。\n4. 下次同步成功时，此 PR 会自动关闭并删除临时分支。"
                 fi
-                git checkout $LOCAL_BR
-                # ==== breaking change 自动修复 END ====
-
-                # ========== 原有冲突提醒 PR 处理继续 ==========
-                gh pr list --repo "${{ matrix.fork }}" --base "$LOCAL_BR" --state open --json number,title | jq -c '.[]' | while read -r pr; do
-                  if [[ $(echo "$pr" | jq -r '.title') == *"冲突提醒"* ]]; then
-                    PR_NUM=$(echo "$pr" | jq -r '.number')
-                    gh pr close --repo "${{ matrix.fork }}" "$PR_NUM" --delete-branch || true
-                  fi
-                done
-
-                TEMP_BR="sync-alert-${LOCAL_BR}-$(date +%s)"
-                git checkout -b $TEMP_BR upstream/$UP_BR
-                git push origin $TEMP_BR
-                gh pr create \
-                  --repo "${{ matrix.fork }}" \
-                  --base "$LOCAL_BR" \
-                  --head "$TEMP_BR" \
-                  --title "🚨 冲突提醒：${{ matrix.name }} [$LOCAL_BR] 同步受阻" \
-                  --body "自动化脚本发现上游 $UP_BR 分支与本地 $LOCAL_BR 分支存在冲突。\n\n**处理建议：**\n1. 在本地切换到 \`$LOCAL_BR\` 分支。\n2. 执行 \`git pull upstream $UP_BR --rebase\`。\n3. 解决冲突后推送到 origin。\n4. 下次同步成功时，此 PR 会自动关闭并删除临时分支。"
               fi
             fi
           done
