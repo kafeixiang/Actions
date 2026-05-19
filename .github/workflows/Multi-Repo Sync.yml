@@ -80,11 +80,14 @@ jobs:
             fork: "kafeixiang/Exclave2"
             upstream: "https://github.com/dyhkwong/Exclave.git" 
             mappings: "dev:dev-2"
+    
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
             
     steps:
       # 第一步：拉取你的 Fork 仓库
       - name: Checkout Fork
-        uses: actions/checkout@v4.2.2
+        uses: actions/checkout@v4
         with:
           repository: ${{ matrix.fork }}
           token: ${{ secrets.PAT_TOKEN }} # 使用你设置的个人访问令牌
@@ -189,12 +192,16 @@ jobs:
                   TEMP_BR="sync-alert-${LOCAL_BR}-$(date +%s)"
                   git checkout -b $TEMP_BR upstream/$UP_BR
                   git push origin $TEMP_BR
+                  
+                  # ⭐ 修复：使用 $'...' 格式实现正确的换行
+                  BODY=$'自动化脚本发现上游 '"$UP_BR"$' 分支与本地 '"$LOCAL_BR"$' 分支存在冲突。\n\n**处理建议：**\n1. 在本地切换到 '"$LOCAL_BR"$' 分支。\n2. 执行 git pull upstream '"$UP_BR"$' --rebase\n3. 解决冲突后推送到 origin。\n4. 下次同步成功时，此 PR 会自动关闭并删除临时分支。'
+                  
                   gh pr create \
                     --repo "${{ matrix.fork }}" \
                     --base "$LOCAL_BR" \
                     --head "$TEMP_BR" \
                     --title "🚨 冲突提醒：${{ matrix.name }} [$LOCAL_BR] 同步受阻" \
-                    --body "自动化脚本发现上游 $UP_BR 分支与本地 $LOCAL_BR 分支存在冲突。\n\n**处理建议：**\n1. 在本地切换到 \`$LOCAL_BR\` 分支。\n2. 执行 \`git pull upstream $UP_BR --rebase\`。\n3. 解决冲突后推送到 origin。\n4. 下次同步成功时，此 PR 会自动关闭并删除临时分支。"
+                    --body "$BODY"
                 fi
               fi
             fi
