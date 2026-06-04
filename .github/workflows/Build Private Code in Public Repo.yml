@@ -1,4 +1,4 @@
-name: Build Exclave App (Fixed)
+name: Build Exclave App (Fixed Order)
 
 on:
   workflow_dispatch:
@@ -13,21 +13,30 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 1. 基础环境配置：Java 21
+      # 1. 【核心修正】必须最先拉取代码，否则后面的环境配置和缓存会找不到文件
+      - name: Checkout Target Repo
+        uses: actions/checkout@v4
+        with:
+          repository: 'kafeixiang/Exclave'
+          token: ${{ secrets.PAT_TOKEN }}
+          ref: ${{ github.event.inputs.branch_name }}
+          submodules: 'recursive' # 递归拉取依赖的子模块源码
+          path: 'Exclave-Project'
+
+      # 2. 初始化环境：配置 Java 21（暂时关闭 cache，确保绝对不报错）
       - name: Set up JDK 21
         uses: actions/setup-java@v4
         with:
           java-version: '21'
           distribution: 'temurin'
-          cache: 'gradle' # 开启 gradle 缓存，加速后续编译
 
-      # 2. 基础环境配置：Go 1.26
+      # 3. 初始化环境：配置 Go 1.26
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
           go-version: '1.26.x'
 
-      # 3. 基础环境配置：Android SDK 37 与 NDK r29
+      # 4. 初始化环境：配置 Android SDK & NDK
       - name: Set up Android SDK & NDK
         uses: android-actions/setup-android@v3
         with:
@@ -35,39 +44,29 @@ jobs:
           build-tools: 37.0.0
           ndk-version: r29
 
-      # 4. 跨仓拉取目标代码（【重要修正】加入 submodules 递归拉取）
-      - name: Checkout Target Repo
-        uses: actions/checkout@v4
-        with:
-          repository: 'kafeixiang/Exclave'
-          token: ${{ secrets.PAT_TOKEN }}
-          ref: ${{ github.event.inputs.branch_name }}
-          submodules: 'recursive' # 必须递归拉取依赖的子模块源码
-          path: 'Exclave-Project'
-
-      # 5. 【新增核心步骤】安装并初始化 Go Mobile 工具
+      # 5. 安装并初始化 Go Mobile 工具
       - name: Install and Init Go Mobile
         run: |
           go install golang.org/x/mobile/cmd/gomobile@latest
           go install golang.org/x/mobile/cmd/gobind@latest
-          # 将 Go 的 bin 目录临时加入系统环境变量，保证命令行能找到 gomobile
+          # 将 Go 的 bin 目录加入系统环境变量
           echo "$HOME/go/bin" >> $GITHUB_PATH
-          # 显式指出当前的 Android NDK 路径进行初始化
+          # 初始化 gomobile 并注入 NDK 路径
           $HOME/go/bin/gomobile init -ndk $ANDROID_NDK_ROOT
 
       # 6. 执行全套编译流程
       - name: Build Project
         env:
-          # 显式把 Android SDK 和 NDK 路径传给底层 Go 编译脚本
           ANDROID_HOME: ${{ env.ANDROID_HOME }}
           ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_ROOT }}
         run: |
+          # 进入刚才拉取下来的项目目录
           cd Exclave-Project
           
           # 赋予执行权限
           chmod +x gradlew run library/core/build.sh
           
-          # 配置签名的本地属性
+          # 创建并配置本地签名环境参数文件
           echo "KEYSTORE_PASS=android" > local.properties
           echo "ALIAS_NAME=androiddebugkey" >> local.properties
           echo "ALIAS_PASS=android" >> local.properties
