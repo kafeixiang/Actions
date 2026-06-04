@@ -40,7 +40,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: 'kafeixiang/Exclave'
-          token: ${{ secrets.MY_GITHUB_TOKEN }}
+          token: ${{ secrets.PAT_TOKEN }}
           ref: ${{ github.event.inputs.branch_name }}
           submodules: 'recursive' # 必须递归拉取依赖的子模块源码
           path: 'Exclave-Project'
