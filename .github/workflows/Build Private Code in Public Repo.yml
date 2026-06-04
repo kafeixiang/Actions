@@ -1,4 +1,4 @@
-name: Build Exclave App (Cache Disabled)
+name: Build Exclave App (Native Android Environment)
 
 on:
   workflow_dispatch:
@@ -13,29 +13,21 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 1. 初始化环境：配置 Java 21（不使用自动缓存）
+      # 1. 初始化环境：配置 Java 21
       - name: Set up JDK 21
         uses: actions/setup-java@v4
         with:
           java-version: '21'
           distribution: 'temurin'
 
-      # 2. 初始化环境：配置 Go 1.26（显式关闭自动缓存，防止找不到 go.sum 报错）
+      # 2. 初始化环境：配置 Go 1.26
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
           go-version: '1.26.x'
           cache: false
 
-      # 3. 初始化环境：配置 Android SDK & NDK
-      - name: Set up Android SDK & NDK
-        uses: android-actions/setup-android@v3
-        with:
-          api-level: 37
-          build-tools: 37.0.0
-          ndk-version: r29
-
-      # 4. 手动安全克隆主仓与子模块
+      # 3. 手动安全克隆主仓与子模块（已通过测试）
       - name: Manual Clone Target Repo with Submodules
         env:
           MY_TOKEN: ${{ secrets.PAT_TOKEN }}
@@ -49,25 +41,41 @@ jobs:
           git config --global url."https://${{ env.MY_TOKEN }}@github.com/".insteadOf "https://github.com/"
           git submodule update --init --recursive --depth=1
 
-      # 5. 安装并初始化 Go Mobile 工具
+      # 4. 【核心修正】利用系统预装的 Android NDK 初始化 Go Mobile 工具
       - name: Install and Init Go Mobile
         run: |
+          # 查找系统内置的 NDK 路径（Ubuntu 镜像默认自带多个 NDK 版本）
+          # 我们动态定位最新的 ndk 目录，并将其软链接到一个固定的路径，方便 Go 调用
+          NDK_PATH=$(ls -d $ANDROID_HOME/ndk/* | sort -V | tail -n 1)
+          echo "检测到系统内置 NDK 路径为: $NDK_PATH"
+          
+          # 将其写入全局环境变量，供后续步骤使用
+          echo "ANDROID_NDK_HOME=$NDK_PATH" >> $GITHUB_ENV
+          echo "ANDROID_NDK_ROOT=$NDK_PATH" >> $GITHUB_ENV
+          
+          # 安装 gomobile
           go install golang.org/x/mobile/cmd/gomobile@latest
           go install golang.org/x/mobile/cmd/gobind@latest
           echo "$HOME/go/bin" >> $GITHUB_PATH
-          $HOME/go/bin/gomobile init -ndk $ANDROID_NDK_ROOT
+          
+          # 执行初始化
+          $HOME/go/bin/gomobile init -ndk $NDK_PATH
 
-      # 6. 执行全套编译流程
+      # 5. 执行全套编译流程
       - name: Build Project
         env:
           ANDROID_HOME: ${{ env.ANDROID_HOME }}
-          ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_ROOT }}
+          ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_HOME }}
         run: |
           cd Exclave-Project
           
+          # 赋予执行权限
           chmod +x gradlew run library/core/build.sh
           
-          # 写入打包属性
+          # 自动接受 Android SDK 协议（防止编译时弹窗卡住）
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
+          
+          # 写入打包本地配置
           echo "KEYSTORE_PASS=android" > local.properties
           echo "ALIAS_NAME=androiddebugkey" >> local.properties
           echo "ALIAS_PASS=android" >> local.properties
@@ -82,7 +90,7 @@ jobs:
           echo "==== Step 3: 最终打包 Android APK ==="
           ./gradlew :app:assembleOssRelease
 
-      # 7. 收集并上传编译产物
+      # 6. 收集并上传编译产物
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
