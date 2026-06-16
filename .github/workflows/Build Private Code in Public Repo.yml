@@ -26,7 +26,7 @@ jobs:
     # 2. 拉取子模块源码
     - name: Clone Submodules
       run: |
-        git config --global url."https://${{ secrets.YOUR_GITHUB_TOKEN }}@github.com/".insteadOf "https://github.com/"
+        git config --global url."https://${{ secrets.secrets.PAT_TOKEN }}@github.com/".insteadOf "https://github.com/"
         echo "==== 开始拉取子模块源码 ===="
         git submodule update --init --recursive --depth=1
 
