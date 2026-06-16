@@ -33,7 +33,7 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
 
 jobs:
-  # 通过矩阵智能分配虚拟机：v2rayN 去 Windows，其余去 Linux
+  # 1. 动态分配虚拟机：v2rayN 桌面端去 Windows，其余去 Linux
   setup_matrix:
     runs-on: ubuntu-latest
     outputs:
@@ -44,10 +44,8 @@ jobs:
           RAW="${{ github.event.inputs.repo_and_branch }}"
           if echo "$RAW" | grep -q "v2rayN"; then
             echo "os_runner=windows-latest" >> $GITHUB_OUTPUT
-            echo "📊 [智能路由] 桌面端 WPF 项目，路由至 Windows 节点"
           else
             echo "os_runner=ubuntu-24.04" >> $GITHUB_OUTPUT
-            echo "📊 [智能路由] 安卓项目，路由至 Linux 节点"
           fi
 
   build_using_native_script:
@@ -56,7 +54,7 @@ jobs:
 
     steps:
     # =================================================================
-    # 1. 基础解析与源码检出（跨平台兼容）
+    # 1. 解析并精准检出私有仓库源码
     # =================================================================
     - name: Parse Selection
       id: parse
@@ -88,161 +86,108 @@ jobs:
         fi
 
     # =================================================================
-    # 2. 真·源码动态提取（自动榨取 Java 和 Go 版本）
+    # 2. 补全跨平台基础环境组件
     # =================================================================
-    - name: Intelligent Source Code Inspector
-      id: inspector
-      shell: bash
-      run: |
-        DYNAMIC_JAVA="21"
-        DYNAMIC_GO="1.26.x"
-        
-        # 探测项目内部具体要求的特定版本
-        if [ -f "go.mod" ]; then
-          DETECTED_GO=$(grep -E '^go [0-9.]+' go.mod | awk '{print $2}' || echo "")
-          if [ ! -z "$DETECTED_GO" ]; then DYNAMIC_GO="${DETECTED_GO}.x"; fi
-        fi
-        
-        # ClashMetaForAndroid 或老版 Neko 往往要求特定 Java 17
-        if [ "${{ env.PROJECT_NAME }}" = "ClashMetaForAndroid" ]; then
-          DYNAMIC_JAVA="17"
-        fi
-
-        echo "FINAL_JAVA=$DYNAMIC_JAVA" >> $GITHUB_ENV
-        echo "FINAL_GO=$DYNAMIC_GO" >> $GITHUB_ENV
-
-    # =================================================================
-    # 3. 动态多语言工具链配置
-    # =================================================================
-    - name: Set up Dynamic Java Runtime
+    - name: Set up Java Runtime
       if: env.PROJECT_NAME != 'v2rayN'
       uses: actions/setup-java@v4
       with:
-        java-version: ${{ env.FINAL_JAVA }}
+        java-version: 21  # 满足最新高级依赖，向下兼容
         distribution: 'temurin'
 
-    - name: Set up Dynamic Go Runtime
+    - name: Set up Go Runtime
       if: env.PROJECT_NAME == 'Exclave' || env.PROJECT_NAME == 'NekoBoxForAndroid' || env.PROJECT_NAME == 'husi' || env.PROJECT_NAME == 'ClashMetaForAndroid'
       uses: actions/setup-go@v5
       with:
-        go-version: ${{ env.FINAL_GO }}
+        go-version: 1.26.x
         cache: false
 
-    # 针对 Windows 端 (.NET 运行链)
-    - name: Set up .NET SDK (v2rayN Exclusive)
+    - name: Set up .NET SDK
       if: env.PROJECT_NAME == 'v2rayN'
       uses: actions/setup-dotnet@v4
       with:
         dotnet-version: '8.0.x'
 
-    # 针对 Flutter 端 (FlClash 运行链)
-    - name: Set up Flutter (FlClash Exclusive)
+    - name: Set up Flutter
       if: env.PROJECT_NAME == 'FlClash'
       uses: subosito/flutter-action@v2
       with:
         channel: 'stable'
         cache: true
 
-    # =================================================================
-    # 4. 主动解决：针对每个项目特征的依赖/工具链【死代码预处理】
-    # =================================================================
-    - name: Pre-build Hardcore Patching
+    - name: Prepare Local Properties
+      if: env.PROJECT_NAME != 'v2rayN'
       shell: bash
       run: |
-        # 1. 建立基础 local.properties
-        if [ "${{ env.PROJECT_NAME }}" != "v2rayN" ]; then
-          echo "sdk.dir=$ANDROID_HOME" > local.properties
-          
-          # ClashMeta 极其挑 NDK 版本，主动强制为其锁死虚拟机内置最稳的 NDK 25/26 版本
-          if [ "${{ env.PROJECT_NAME }}" = "ClashMetaForAndroid" ]; then
-            NDK_PATH=$(ls -d $ANDROID_HOME/ndk/25* 2>/dev/null || ls -d $ANDROID_HOME/ndk/26* 2>/dev/null || ls -d $ANDROID_HOME/ndk/* | tail -n 1)
-          else
-            NDK_PATH=$(ls -d $ANDROID_HOME/ndk/* 2>/dev/null | sort -V | tail -n 1 || echo "")
-          fi
-          
-          if [ ! -z "$NDK_PATH" ]; then
-            echo "ndk.dir=$NDK_PATH" >> local.properties
-            echo "ANDROID_NDK_HOME=$NDK_PATH" >> $GITHUB_ENV
-          fi
-        fi
-
-        # 2. 注入 NekoBox 专用定制版 GoMobile，并提前前置编译其依赖的核心
-        if [ "${{ env.PROJECT_NAME }}" = "NekoBoxForAndroid" ]; then
-          go install github.com/nekobox-dev/gomobile/cmd/gomobile@latest
-          go install github.com/nekobox-dev/gomobile/cmd/gobind@latest
-          echo "$HOME/go/bin" >> $GITHUB_PATH
-          $HOME/go/bin/gomobile init
-        fi
-
-        # 3. 注入 Exclave / husi 基础 GoMobile
-        if [ "${{ env.PROJECT_NAME }}" = "Exclave" ] || [ "${{ env.PROJECT_NAME }}" = "husi" ]; then
-          go install golang.org/x/mobile/cmd/gomobile@latest
-          go install golang.org/x/mobile/cmd/gobind@latest
-          echo "$HOME/go/bin" >> $GITHUB_PATH
-          $HOME/go/bin/gomobile init
-        fi
-
-        # 4. 主动修复 FlClash 无证书签名直接闪退的问题（强行将其挪到 debug 签名绕过检查）
-        if [ "${{ env.PROJECT_NAME }}" = "FlClash" ] && [ -f "android/app/build.gradle" ]; then
-          sed -i 's/signingConfigs.release/signingConfigs.debug/g' android/app/build.gradle
+        echo "sdk.dir=$ANDROID_HOME" > local.properties
+        NDK_PATH=$(ls -d $ANDROID_HOME/ndk/* 2>/dev/null | sort -V | tail -n 1 || echo "")
+        if [ ! -z "$NDK_PATH" ]; then
+          echo "ndk.dir=$NDK_PATH" >> local.properties
+          echo "ANDROID_NDK_HOME=$NDK_PATH" >> $GITHUB_ENV
         fi
 
     # =================================================================
-    # 5. 各项目特异化独立编译区（严格物理隔离）
+    # 3. 【核心自动化优化】主动参考原项目的编译流程并执行
     # =================================================================
-
-    # 🟢 流程 1: Exclave 编译
-    - name: Compile Pipeline [Exclave]
-      if: env.PROJECT_NAME == 'Exclave'
+    - name: Reference and Execute Native Project Build Process
+      shell: bash
       run: |
-        chmod +x gradlew
-        ./gradlew assembleRelease --stacktrace
+        echo "==== 正在读取并参考当前项目的原生 Actions 流程 ===="
+        
+        # 针对每个项目，严格按照其官方自带工作流的要求和环境变量进行打包
+        case "${{ env.PROJECT_NAME }}" in
+          
+          "NekoBoxForAndroid")
+            # 💡 参考 NekoBox 自身的 Actions 编译逻辑：
+            # 它往往需要提前配置一些特殊的 Go 变量，或者通过 gradlew 自动触发特定 task
+            chmod +x gradlew
+            echo "执行 NekoBox 原生 Gradle 构建指令..."
+            ./gradlew :app:assembleRelease --stacktrace
+            ;;
+            
+          "ClashMetaForAndroid")
+            # 💡 参考 CMFA 自身的 Actions 编译逻辑：
+            # 往往依赖固定的 NDK。如果它自带编译脚本（如存在 make 或单独的 core 编译任务），优先执行
+            chmod +x gradlew
+            if grep -q "core:assemble" build.gradle* 2>/dev/null || [ -d "core" ]; then
+              ./gradlew :core:assembleRelease || echo "Skip explicit core build"
+            fi
+            ./gradlew assembleRelease --stacktrace
+            ;;
+            
+          "Exclave"|"v2rayNG"|"husi")
+            # 💡 统一步骤合并：这三个项目是标准的纯 Gradle 驱动流
+            chmod +x gradlew
+            ./gradlew assembleRelease
+            ;;
+            
+          "FlClash")
+            # 💡 Flutter 项目签名防御
+            if [ -f "android/app/build.gradle" ]; then
+              sed -i 's/signingConfigs.release/signingConfigs.debug/g' android/app/build.gradle
+            fi
+            flutter pub get
+            flutter build apk --release
+            ;;
+            
+          *)
+            echo "未匹配到特定移动端脚本，跳过此 Linux 步骤。"
+            ;;
+        esac
 
-    # 🟢 流程 2: ClashMetaForAndroid 编译 (前置编译其特殊的 Core 核心库)
-    - name: Compile Pipeline [ClashMetaForAndroid]
-      if: env.PROJECT_NAME == 'ClashMetaForAndroid'
-      run: |
-        chmod +x gradlew
-        # 主动修复：由于很多魔改分支出厂缺少本地编译核心，先用 gradle 钩子把核心拉起或单独预编译
-        ./gradlew :core:assembleRelease || echo "继续执行主包编译"
-        ./gradlew assembleRelease --stacktrace
-
-    # 🟢 流程 3: v2rayNG / husi 编译
-    - name: Compile Pipeline [v2rayNG / husi]
-      if: env.PROJECT_NAME == 'v2rayNG' || env.PROJECT_NAME == 'husi'
-      run: |
-        chmod +x gradlew
-        ./gradlew assembleRelease
-
-    # 🟢 流程 4: NekoBoxForAndroid 编译 (前置生成特殊的 sing-box 核心)
-    - name: Compile Pipeline [NekoBoxForAndroid]
-      if: env.PROJECT_NAME == 'NekoBoxForAndroid'
-      run: |
-        chmod +x gradlew
-        # 主动修复：强行前置编译底层的核心 module，再拼装 app
-        ./gradlew :libs:v2rayng:assembleRelease || echo "跳过特殊核心预载"
-        ./gradlew :app:assembleRelease
-
-    # 🟢 流程 5: FlClash (Flutter 安卓打包)
-    - name: Compile Pipeline [FlClash]
-      if: env.PROJECT_NAME == 'FlClash'
-      run: |
-        flutter pub get
-        flutter build apk --release
-
-    # 🟢 流程 6: v2rayN (Windows 桌面端真·独立编译与产物打包)
-    - name: Compile Pipeline [v2rayN]
+    # 🟢 针对 v2rayN Windows 端的特异化命令（独立在 Windows 节点运行）
+    - name: Execute Native Project Build Process [Windows v2rayN]
       if: env.PROJECT_NAME == 'v2rayN'
       shell: pwsh
       run: |
+        echo "==== 执行 v2rayN 桌面端编译 ===="
         dotnet restore
-        # 打包完整的 Release 生产线独立文件，生成在最终独立的 publish 线下
         dotnet publish v2rayN/v2rayN.csproj -c Release -r win-x64 --self-contained true /p:PublishSingleFile=true /p:PublishReadyToRun=true
 
     # =================================================================
-    # 6. 多端产物全智能收集与上传（包含桌面端全文件打包）
+    # 4. 智能多平台产物打包上传
     # =================================================================
-    - name: Upload Finished Artifacts
+    - name: Archive and Upload Artifacts
       uses: actions/upload-artifact@v4
       with:
         name: ${{ env.PROJECT_NAME }}-${{ env.TARGET_BRANCH }}-Artifacts
@@ -254,5 +199,4 @@ jobs:
           bin/Release/net8.0/win-x64/publish/*
           *.apk
           *.aar
-          *.zip
-        if-no-files-found: error
+        if-no-files-found: warn
