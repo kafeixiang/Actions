@@ -17,7 +17,7 @@ on:
           - main
           - dev-2
           - dev-3
-          - dev-3-cs # 👈 已成功为你添加该分支
+          - dev-3-cs
           - dev-tuic
 
 env:
@@ -86,7 +86,7 @@ jobs:
     - name: Upload APK Artifacts to Public Actions
       uses: actions/upload-artifact@v4
       with:
-        name: Exclave-Free-Build-APKs
+        name: Exclave-Build-APKs # 👈 已成功去掉了 "Free-"
         path: |
           app/build/outputs/apk/release/*.apk
         if-no-files-found: error
