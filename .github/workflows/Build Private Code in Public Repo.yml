@@ -17,13 +17,14 @@ on:
           - main
           - dev-2
           - dev-3
+          - dev-3-cs # 👈 已成功为你添加该分支
           - dev-tuic
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
 
 jobs:
-  build_using_native_script: # 👈 还原回你最初的 Job 名称
+  build_using_native_script:
     runs-on: ubuntu-24.04
 
     steps:
@@ -57,7 +58,7 @@ jobs:
         go-version: 1.26.x
         cache: false
 
-    # 5. 配置新版 Go Mobile 与 NDK 运行环境（已移除了引发报错的 -ndk 参数）
+    # 5. 配置新版 Go Mobile 与 NDK 运行环境
     - name: Set up Go Mobile & NDK
       run: |
         NDK_PATH=$(ls -d $ANDROID_HOME/ndk/* | sort -V | tail -n 1)
