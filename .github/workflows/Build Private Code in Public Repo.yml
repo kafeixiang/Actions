@@ -19,7 +19,7 @@ jobs:
       uses: actions/checkout@v4
       with:
         repository: kafeixiang/Exclave
-        token: ${{ secrets.YOUR_GITHUB_TOKEN }} # 请确保在 Secrets 中配置了正确的 Token
+        token: ${{ secrets.PAT_TOKEN }} # 请确保在 Secrets 中配置了正确的 Token
         ref: dev
         fetch-depth: 1
 
