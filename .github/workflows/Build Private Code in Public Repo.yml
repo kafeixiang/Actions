@@ -33,7 +33,6 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
 
 jobs:
-  # 1. 动态分配虚拟机：v2rayN 桌面端去 Windows，其余去 Linux
   setup_matrix:
     runs-on: ubuntu-latest
     outputs:
@@ -54,7 +53,7 @@ jobs:
 
     steps:
     # =================================================================
-    # 1. 解析并精准检出私有仓库源码
+    # 1. 精准检出
     # =================================================================
     - name: Parse Selection
       id: parse
@@ -86,13 +85,13 @@ jobs:
         fi
 
     # =================================================================
-    # 2. 补全跨平台基础环境组件
+    # 2. 补全基础运行组件
     # =================================================================
     - name: Set up Java Runtime
       if: env.PROJECT_NAME != 'v2rayN'
       uses: actions/setup-java@v4
       with:
-        java-version: 21  # 满足最新高级依赖，向下兼容
+        java-version: 21
         distribution: 'temurin'
 
     - name: Set up Go Runtime
@@ -127,27 +126,31 @@ jobs:
         fi
 
     # =================================================================
-    # 3. 【核心自动化优化】主动参考原项目的编译流程并执行
+    # 3. 参考原项目环境，执行特异化稳固构建
     # =================================================================
     - name: Reference and Execute Native Project Build Process
       shell: bash
       run: |
         echo "==== 正在读取并参考当前项目的原生 Actions 流程 ===="
         
-        # 针对每个项目，严格按照其官方自带工作流的要求和环境变量进行打包
+        # 🚀 极其关键：针对虚拟机的极度紧缺的内存（7GB左右），主动对 Gradle 全局强制扩容
+        # 否则 NekoBox/ClashMeta 进行 Go 内核交织编译时，会高概率因为 OOM 导致虚拟机在没有任何错误日志的情况下默默闪退
+        export GRADLE_OPTS="-Xmx4g -XX:MaxMetaspaceSize=1g -XX:+UseG1GC"
+        
         case "${{ env.PROJECT_NAME }}" in
           
           "NekoBoxForAndroid")
-            # 💡 参考 NekoBox 自身的 Actions 编译逻辑：
-            # 它往往需要提前配置一些特殊的 Go 变量，或者通过 gradlew 自动触发特定 task
             chmod +x gradlew
-            echo "执行 NekoBox 原生 Gradle 构建指令..."
+            echo "⚡ 发现 NekoBox 项目，正在注入特定编译流环境..."
+            
+            # 填坑：有些魔改版的 NekoBox 显式依赖 local.properties 里的自定义变量来拉起内部模块，这里做环境对齐
+            echo "go.dir=$(which go | sed 's/\/bin\/go//')" >> local.properties
+            
+            # 执行针对该项目最稳妥的全变体编译（避免特定的 flavor 缺失问题）
             ./gradlew :app:assembleRelease --stacktrace
             ;;
             
           "ClashMetaForAndroid")
-            # 💡 参考 CMFA 自身的 Actions 编译逻辑：
-            # 往往依赖固定的 NDK。如果它自带编译脚本（如存在 make 或单独的 core 编译任务），优先执行
             chmod +x gradlew
             if grep -q "core:assemble" build.gradle* 2>/dev/null || [ -d "core" ]; then
               ./gradlew :core:assembleRelease || echo "Skip explicit core build"
@@ -156,13 +159,11 @@ jobs:
             ;;
             
           "Exclave"|"v2rayNG"|"husi")
-            # 💡 统一步骤合并：这三个项目是标准的纯 Gradle 驱动流
             chmod +x gradlew
             ./gradlew assembleRelease
             ;;
             
           "FlClash")
-            # 💡 Flutter 项目签名防御
             if [ -f "android/app/build.gradle" ]; then
               sed -i 's/signingConfigs.release/signingConfigs.debug/g' android/app/build.gradle
             fi
@@ -175,25 +176,24 @@ jobs:
             ;;
         esac
 
-    # 🟢 针对 v2rayN Windows 端的特异化命令（独立在 Windows 节点运行）
+    # 🟢 针对 v2rayN Windows 端
     - name: Execute Native Project Build Process [Windows v2rayN]
       if: env.PROJECT_NAME == 'v2rayN'
       shell: pwsh
       run: |
-        echo "==== 执行 v2rayN 桌面端编译 ===="
         dotnet restore
         dotnet publish v2rayN/v2rayN.csproj -c Release -r win-x64 --self-contained true /p:PublishSingleFile=true /p:PublishReadyToRun=true
 
     # =================================================================
-    # 4. 智能多平台产物打包上传
+    # 4. 大一统产物精确搜集矩阵
     # =================================================================
     - name: Archive and Upload Artifacts
       uses: actions/upload-artifact@v4
       with:
         name: ${{ env.PROJECT_NAME }}-${{ env.TARGET_BRANCH }}-Artifacts
         path: |
-          app/build/outputs/apk/release/*.apk
-          app/build/outputs/bundle/release/*.aab
+          app/build/outputs/apk/**/*.apk
+          app/build/outputs/bundle/**/*.aab
           build/app/outputs/flutter-apk/*.apk
           v2rayN/bin/Release/net8.0/win-x64/publish/*
           bin/Release/net8.0/win-x64/publish/*
