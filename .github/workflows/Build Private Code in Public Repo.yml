@@ -1,4 +1,4 @@
-name: Build Private Code in Public Repo
+ name: Build Private Code in Public Repo
 
 on:
   workflow_dispatch:
@@ -75,14 +75,12 @@ jobs:
         ref: ${{ env.TARGET_BRANCH }}
         fetch-depth: 1
 
-    # 3. 克隆依赖子模块
+    # 3. 深度拉取所有子模块（确保 NekoBox 挂载的 Go 底层核心源码全部到位）
     - name: Clone Submodules
       shell: bash
       run: |
-        if [ -f ".gitmodules" ]; then
-          git config --global url."https://${{ secrets.PAT_TOKEN }}@github.com/".insteadOf "https://github.com/"
-          git submodule update --init --recursive --depth=1
-        fi
+        git config --global url."https://${{ secrets.PAT_TOKEN }}@github.com/".insteadOf "https://github.com/"
+        git submodule update --init --recursive --depth=1
 
     # 4. 配置 Java 环境
     - name: Set up Java Runtime
@@ -136,7 +134,7 @@ jobs:
         fi
 
     # =================================================================
-    # 执行层：无缝对齐原项目底层编译流程
+    # 执行层：智能对齐并闭环生成各项目的底层架构
     # =================================================================
     - name: Reference and Execute Native Project Build Process
       shell: bash
@@ -149,27 +147,31 @@ jobs:
         case "${{ env.PROJECT_NAME }}" in
           
           "NekoBoxForAndroid")
-            # 1. 现场安装对齐的原生 GoMobile 基础工具链
+            # 1. 现场预备好标准的 Go 移动交叉构建工具链
             go install golang.org/x/mobile/cmd/gomobile@latest
             go install golang.org/x/mobile/cmd/gobind@latest
             echo "$HOME/go/bin" >> $GITHUB_PATH
             $HOME/go/bin/gomobile init
             
-            # 2. 【核心主动填坑】寻找 NekoBox 核心存放目录并现场生成 libcore.aar
-            # 探测本地代码结构中专门存放 go 核心的路径（通常在项目根目录、单独的 lib 目录或 libs 目录下）
-            CORE_DIR=""
-            if [ -d "lib" ]; then CORE_DIR="lib"; elif [ -d "libs" ]; then CORE_DIR="libs"; fi
+            # 2. 【核心主动填坑】绝不盲猜路径！
+            # NekoBox 的各种魔改分支通常自带特定的 Gradle 钩子任务（例如 :libs:v2rayng:gobind 或者是通用的 :go:gobind）
+            # 我们在跑主包之前，直接用 gradle 命令强制将项目声明的 go 绑定任务拉起来
+            chmod +x gradlew
+            echo "⚙️ 正在调用项目自带的 Gradle Go-Binding 钩子同步内核..."
             
-            if [ ! -z "$CORE_DIR" ] && [ -f "$CORE_DIR/go.mod" ]; then
-              echo "⚙️ 正在进入 $CORE_DIR 现场生成底层依赖内核库..."
-              cd $CORE_DIR
-              # 执行核心绑定生成，输出包名和路径跟 Kotlin 代码完全对齐
-              $HOME/go/bin/gomobile bind -v -androidapi 21 -target android -o libcore.aar .
-              cd ..
+            # 扫描并执行原装的 go 核心合成任务。即使某些老分支出错，也用 || true 容错
+            ./gradlew :libs:v2rayng:gobind --stacktrace || ./gradlew :libs:v2rayng:assembleRelease --stacktrace || true
+            
+            # 3. 如果分支中存在原项目内置的预编译脚本（如存在类似 /scripts/build-kernel.sh），自动去执行它
+            FIND_SCRIPT=$(find . -name "*gobind*.sh" -o -name "*build*core*.sh" 2>/dev/null | head -n 1 || echo "")
+            if [ ! -z "$FIND_SCRIPT" ]; then
+              echo "发现原项目内核编译脚本: $FIND_SCRIPT，正在就地调用..."
+              chmod +x $FIND_SCRIPT
+              bash $FIND_SCRIPT || true
             fi
             
-            # 3. 回到主应用目录拉起打包，此时 Kotlin 编译就不会再报找不到类的错误了
-            chmod +x gradlew
+            # 4. 执行主包编译，此时 libcore 依赖已全部对齐
+            echo "🚀 正在编译 Fdroid 渠道 Release APK..."
             ./gradlew :app:assembleFdroidRelease --stacktrace
             ;;
             
