@@ -1,4 +1,4 @@
- name: Build Private Code in Public Repo
+name: Build Private Code in Public Repo
 
 on:
   workflow_dispatch:
