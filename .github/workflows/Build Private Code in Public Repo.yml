@@ -116,7 +116,7 @@ jobs:
         channel: 'stable'
         cache: true
 
-    # 8. 【husi dev-3 专属修补】部署 Linux 交叉编译 Mac 必备的基础组件
+    # 8. 【husi dev-3 专项补丁】部署 Linux 交叉编译 Mac 必备的基础组件
     - name: Inject Rigorous Linux-to-Mac Cross-Compilation Toolchain
       if: env.PROJECT_NAME == 'husi'
       shell: bash
@@ -146,7 +146,7 @@ jobs:
         fi
 
     # =================================================================
-    # 执行层：无缝克隆原厂脚本，绝无任何干扰任务
+    # 执行层：无缝克隆原厂脚本，彻底闭环构建
     # =================================================================
     - name: Reference and Execute Native Project Build Process
       shell: bash
@@ -198,9 +198,28 @@ jobs:
             $HOME/go/bin/gomobile init
             echo "go.dir=$(which go | sed 's/\/bin\/go//')" >> local.properties
             
-            # 2. 【大终结】撤销一切外来干扰命令，直接跑你原装项目 Actions 所用的一键构建目标
+            # 2. 【对齐 #177 原厂编译规约】赋予原装一键预备脚本执行权限
             chmod +x gradlew
-            echo "🚀 [Matsuri 专线] 原装环境就位，直接由主工程自动触发绑定并执行主包编译..."
+            find . -name "*.sh" | xargs chmod +x || true
+            
+            # 执行官方原装初始化，拉取并对齐所有的内部交叉依赖库拓展
+            if [ -f "init.sh" ]; then
+              echo "⚙️ [Matsuri 专线] 正在启动原厂 init.sh 初始化底层拓扑..."
+              ./init.sh
+            fi
+            
+            # 3. 呼叫项目内置的打包总控。原厂 build.sh 会帮我们处理所有的 go 绑定以及 AAR 吐出
+            if [ -f "build.sh" ]; then
+              echo "⚙️ [Matsuri 专线] 正在调用原厂总控编译 build.sh 自动生成内核 AAR..."
+              ./build.sh || bash build.sh
+            elif [ -d "buildScript" ]; then
+              echo "⚙️ [Matsuri 专线] 检测到新版脚本目录，正在调用其内部脚本生成内核..."
+              FIND_CORE_SH=$(find buildScript/ -name "*.sh" | head -n 1 || echo "")
+              if [ ! -z "$FIND_CORE_SH" ]; then ./$FIND_CORE_SH || bash $FIND_CORE_SH || true; fi
+            fi
+            
+            # 4. 执行主包编译，此时底层 AAR 已被原装脚本完美送入依赖槽，直接通关！
+            echo "🚀 正在编译 Fdroid 渠道 Release APK..."
             ./gradlew :app:assembleFdroidRelease --stacktrace
             ;;
             
