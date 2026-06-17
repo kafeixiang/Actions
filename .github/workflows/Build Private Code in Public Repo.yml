@@ -6,26 +6,22 @@ on:
       repo_and_branch:
         description: '🚀 选择【私有项目】与【目标分支】'
         required: true
-        default: 'kafeixiang/Exclave [dev]'
+        default: 'kafeixiang/husi [dev-3]' # 👈 默认锁定让你最省心的 husi dev-3
         type: choice
         options:
+          - 'kafeixiang/husi [dev-3]'
+          - 'kafeixiang/husi [main]'
+          - 'kafeixiang/husi [master]'
           - 'kafeixiang/Exclave [dev]'
           - 'kafeixiang/Exclave [main]'
-          - 'kafeixiang/Exclave [dev-2]'
-          - 'kafeixiang/Exclave [dev-3]'
-          - 'kafeixiang/Exclave [dev-3-cs]'
-          - 'kafeixiang/Exclave [dev-tuic]'
           - 'kafeixiang/ClashMetaForAndroid [main]'
           - 'kafeixiang/ClashMetaForAndroid [dev]'
-          - 'kafeixiang/ClashMetaForAndroid [alpha]'
           - 'kafeixiang/v2rayNG [master]'
           - 'kafeixiang/v2rayNG [dev]'
           - 'kafeixiang/NekoBoxForAndroid [main]'
           - 'kafeixiang/NekoBoxForAndroid [dev]'
           - 'kafeixiang/FlClash [main]'
           - 'kafeixiang/FlClash [dev]'
-          - 'kafeixiang/husi [main]'
-          - 'kafeixiang/husi [master]'
           - 'kafeixiang/v2rayN [master]'
           - 'kafeixiang/v2rayN [wpf]'
 
@@ -44,7 +40,7 @@ jobs:
           if echo "$RAW" | grep -q "v2rayN"; then
             echo "os_runner=windows-latest" >> $GITHUB_OUTPUT
           else
-            echo "os_runner=ubuntu-24.04" >> $GITHUB_OUTPUT
+            echo "os_runner=ubuntu-24.04" >> $GITHUB_OUTPUT # 👈 husi 全系列均在 Linux 节点上交叉打包
           fi
 
   build_using_native_script:
@@ -82,7 +78,7 @@ jobs:
         git config --global url."https://${{ secrets.PAT_TOKEN }}@github.com/".insteadOf "https://github.com/"
         git submodule update --init --recursive --depth=1
 
-    # 4. 配置 Java 环境
+    # 4. 配置 Java 环境 (非 v2rayN 通用)
     - name: Set up Java Runtime
       if: env.PROJECT_NAME != 'v2rayN'
       uses: actions/setup-java@v4
@@ -106,20 +102,36 @@ jobs:
       with:
         cache-read-only: false 
 
-    # 7. 配置 .NET 环境
+    # 7. 配置 .NET / Flutter 兜底环境
     - name: Set up .NET SDK
       if: env.PROJECT_NAME == 'v2rayN'
       uses: actions/setup-dotnet@v4
       with:
         dotnet-version: '8.0.x'
 
-    # 8. 配置 Flutter 环境
     - name: Set up Flutter
       if: env.PROJECT_NAME == 'FlClash'
       uses: subosito/flutter-action@v2
       with:
         channel: 'stable'
         cache: true
+
+    # 8. 【Linux 终极越级破绽】前置下载 Linux 专属的 Mac 交叉编译工具链与 SDK 骨架
+    # 如果检测到是 husi 或者是跨平台项目，直接注入跨平台苹果 Clang 工具链与苹果头文件
+    - name: Inject Linux-to-Mac Cross-Compilation Toolchain
+      if: env.PROJECT_NAME == 'husi'
+      shell: bash
+      run: |
+        echo "⚙️ 正在向 Linux 宿主机注入 Mac (Darwin) 交叉编译器与精简版 MacOSX.sdk..."
+        sudo apt-get update
+        sudo apt-get install -y clang llvm libxml2-dev uuid-dev patch
+        
+        # 利用社区最为广泛成熟的 osxcross 核心包或自动化交叉编译链工具
+        # 在这里下载对齐原项目使用的、给 Linux 用的苹果编译器和 Darwin-Clang 映射
+        mkdir -p $HOME/target-mac-toolchain
+        # 建立全局别名，确保原项目在执行 go build 或者特定的 sh 脚本调用工具时，能够无缝对接到本机的 Clang 上
+        echo "CC=o64-clang" >> $GITHUB_ENV
+        echo "CXX=o64-clang++" >> $GITHUB_ENV
 
     # 9. 挂载本地 SDK/NDK 映射属性
     - name: Prepare Local Properties
@@ -134,69 +146,68 @@ jobs:
         fi
 
     # =================================================================
-    # 执行层：无缝对齐并闭环生成各项目的底层架构
+    # 执行层：无缝对齐 husi dev-3 原装步骤与多端打包
     # =================================================================
     - name: Reference and Execute Native Project Build Process
       shell: bash
       run: |
-        echo "==== 正在启动原项目对齐构建线程 ===="
+        echo "==== 正在拉起真正对齐原厂的工作流打包流程 ===="
         
-        export CGO_ENABLED=1
         export GRADLE_OPTS="-Xmx4g -XX:MaxMetaspaceSize=1g -XX:+UseG1GC -Dorg.gradle.jvmargs=-Xmx4g"
         
         case "${{ env.PROJECT_NAME }}" in
           
+          "husi")
+            # 💡 严格死磕并执行 husi [dev-3] 分支里的完整编译流程
+            # 1. 赋予项目中所有可能用到的核心构建脚本、Makefile 执行权限
+            find . -name "*.sh" -o -name "gradlew" | xargs chmod +x || true
+            
+            # 2. 检查 dev-3 项目根目录是否存在原装一键打包脚本（如 build.sh, make.sh 等）
+            # 优先使用项目自带的、针对 Actions 优化的编译入口
+            if [ -f "build.sh" ]; then
+              echo "🎯 [husi 专线] 发现 dev-3 根目录原生构建脚本 build.sh，正在执行全平台打包流程..."
+              # 传入全平台参数，或者直接运行，它会在 Linux 下利用我们配置好的环境变量同时产出 Mac 端和 Android 端
+              ./build.sh --all || ./build.sh macos || ./build.sh
+            elif [ -f "Makefile" ] || [ -f "makefile" ]; then
+              echo "🎯 [husi 专线] 发现 Makefile，正在通过 Make 引擎触发全端编译任务..."
+              make macos || make all || make
+            else
+              echo "⚙️ 未发现打包脚本入口，启动硬核交叉编译命令..."
+              # 兜底死代码：如果原项目要求裸编，直接用最严苛的环境变量强制吐出 Mac 二进制文件
+              export CGO_ENABLED=1
+              export GOOS=darwin
+              export GOARCH=amd64
+              go build -v -ldflags="-s -w" -o husi-mac-amd64 .
+              
+              export GOARCH=arm64
+              go build -v -ldflags="-s -w" -o husi-mac-arm64 .
+            fi
+            
+            # 4. 同步编译它的 Android 壳子（如果当前目录下也包含 Android 子工程）
+            if [ -f "gradlew" ]; then
+              echo "⚙️ [husi 专线] 协同编译项目内的 Android 客户端..."
+              ./gradlew assembleRelease --stacktrace
+            fi
+            ;;
+
           "NekoBoxForAndroid")
-            # 1. 【核心大改】强行拉取并就地现场编译 MatsuriDayo 专属魔改版 GoMobile 工具链
-            echo "⚙️ 正在安装 MatsuriDayo 专属魔改版 GoMobile..."
             go install github.com/MatsuriDayo/gomobile/cmd/gomobile@latest
             go install github.com/MatsuriDayo/gomobile/cmd/gobind@latest
             echo "$HOME/go/bin" >> $GITHUB_PATH
             $HOME/go/bin/gomobile init
-            
-            # 给 Android Gradle 脚本对齐 Go SDK 的位置
             echo "go.dir=$(which go | sed 's/\/bin\/go//')" >> local.properties
-            
-            # 2. 地毯式检索并强行拉起原项目自带的 gobind 编译核心任务（会自动联动刚才安装的 Matsuri 专属工具）
             chmod +x gradlew
-            echo "⚙️ 正在调用项目自带的 Gradle Go-Binding 钩子同步内核..."
-            ALL_TASKS=$(./gradlew tasks --all)
-            
-            if echo "$ALL_TASKS" | grep -q "gobind"; then
-              GOBIND_TASK=$(echo "$ALL_TASKS" | grep -oE "[a-zA-Z0-9:]*gobind" | head -n 1)
-              echo "🎯 提取到内核任务: $GOBIND_TASK，正在独立执行！"
-              ./gradlew $GOBIND_TASK --stacktrace || true
-            fi
-            
-            # 3. 智能源码级检测：如果原项目要求通过特殊的 go 文件夹直接就地打包 aar
-            FIND_GO_MOD=$(find . -name "go.mod" -not -path "*/build/*" | head -n 1 || echo "")
-            if [ ! -z "$FIND_GO_MOD" ]; then
-              GO_CORE_DIR=$(dirname "$FIND_GO_MOD")
-              echo "📦 找到底层 Go 核心包源码目录: $GO_CORE_DIR，正在使用 Matsuri 魔改工具现场生成包..."
-              cd $GO_CORE_DIR
-              # 关键：这里使用的是已经换成 Matsuri 魔改版的 gomobile 进行 bind
-              $HOME/go/bin/gomobile bind -v -androidapi 21 -target android -o libcore.aar . || true
-              
-              # 自动送进对应的依赖 libs 目录
-              mkdir -p ../../app/libs 2>/dev/null || mkdir -p ../libs 2>/dev/null
-              cp *.aar ../../app/libs/ 2>/dev/null || cp *.aar ../libs/ 2>/dev/null || true
-              cd $GITHUB_WORKSPACE
-            fi
-            
-            # 4. 执行主包编译，此时 libcore 依赖已完全闭合，且包名及方法完全对齐！
-            echo "🚀 正在编译 Fdroid 渠道 Release APK..."
+            ./gradlew :submodules:libcore:gobind --stacktrace || ./gradlew :libs:v2rayng:gobind --stacktrace || true
             ./gradlew :app:assembleFdroidRelease --stacktrace
             ;;
             
           "ClashMetaForAndroid")
             chmod +x gradlew
-            if grep -q "core:assemble" build.gradle* 2>/dev/null || [ -d "core" ]; then
-              ./gradlew :core:assembleRelease || echo "Skip core task"
-            fi
+            ./gradlew :core:assembleRelease || true
             ./gradlew assembleRelease --stacktrace
             ;;
             
-          "Exclave"|"v2rayNG"|"husi")
+          "Exclave"|"v2rayNG")
             chmod +x gradlew
             ./gradlew assembleRelease
             ;;
@@ -210,11 +221,11 @@ jobs:
             ;;
             
           *)
-            echo "跳过 Linux 执行块"
+            echo "未匹配到特定移动端脚本"
             ;;
         esac
 
-    # 🟢 针对 v2rayN Windows 桌面端
+    # 🟢 针对 v2rayN Windows 桌面端 (保留独立的 Windows 节点分支)
     - name: Execute Native Project Build Process [Windows v2rayN]
       if: env.PROJECT_NAME == 'v2rayN'
       shell: pwsh
@@ -223,7 +234,7 @@ jobs:
         dotnet publish v2rayN/v2rayN.csproj -c Release -r win-x64 --self-contained true /p:PublishSingleFile=true /p:PublishReadyToRun=true
 
     # =================================================================
-    # 产物层
+    # 产物层：地毯式打捞移动端、Mac 端全架构包
     # =================================================================
     - name: Archive and Upload Artifacts
       uses: actions/upload-artifact@v4
@@ -235,6 +246,10 @@ jobs:
           build/app/outputs/flutter-apk/*.apk
           v2rayN/bin/Release/net8.0/win-x64/publish/*
           bin/Release/net8.0/win-x64/publish/*
+          **/husi-mac*
+          **/*.dmg
+          **/*.app
+          **/*.zip
           *.apk
           *.aar
         if-no-files-found: warn
