@@ -179,19 +179,16 @@ jobs:
             ;;
 
           "NekoBoxForAndroid")
-            # 🚀【终极破局：就地无感源码级注入】
-            # 解决 go install 因为魔改库 go.mod 声明不匹配闪退的问题
-            echo "⚙️ [Matsuri 专线] 正在通过源码就地构建流程注入 Matsuri 专用版 GoMobile..."
-            mkdir -p $STAGE_DIR/gomobile-src
-            cd $STAGE_DIR/gomobile-src
+            # 🚀【修复：锁定有高权限的系统的安全临时区 $RUNNER_TEMP】
+            echo "⚙️ [Matsuri 专线] 正在通过本地安全空间源码就地构建 Matsuri 专用版 GoMobile..."
+            mkdir -p $RUNNER_TEMP/gomobile-src
+            cd $RUNNER_TEMP/gomobile-src
             
-            # 从官方建立基础骨架，再利用 git 强制将 Matsuri 远程的魔改代码就地无损融合
             git init
             git remote add origin https://github.com/MatsuriDayo/gomobile.git
             git fetch --depth=1 origin
             git checkout FETCH_HEAD
             
-            # 利用本地相对路径进行编译就地安装，彻底绕过 Go 的包名校验大坑！
             go install ./cmd/gomobile
             go install ./cmd/gobind
             
