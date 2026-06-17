@@ -52,7 +52,7 @@ jobs:
     runs-on: ${{ needs.setup_matrix.outputs.os_runner }}
 
     steps:
-    # 1. 解析菜单选择并注入环境变量
+    # 1. 解析菜单选择
     - name: Parse Selection
       id: parse
       shell: bash
@@ -75,7 +75,7 @@ jobs:
         ref: ${{ env.TARGET_BRANCH }}
         fetch-depth: 1
 
-    # 3. 带凭证克隆底层依赖子模块
+    # 3. 克隆依赖子模块
     - name: Clone Submodules
       shell: bash
       run: |
@@ -92,7 +92,7 @@ jobs:
         java-version: 21
         distribution: 'temurin'
 
-    # 5. 配置 Go 环境（同步复用原项目 Actions 级别的 Go 缓存）
+    # 5. 配置 Go 环境
     - name: Set up Go Runtime
       if: env.PROJECT_NAME == 'Exclave' || env.PROJECT_NAME == 'NekoBoxForAndroid' || env.PROJECT_NAME == 'husi' || env.PROJECT_NAME == 'ClashMetaForAndroid'
       uses: actions/setup-go@v5
@@ -101,21 +101,21 @@ jobs:
         cache: true 
         cache-dependency-path: "**/go.sum"
 
-    # 6. 核心加速器：挂载原项目专属的 Java/Gradle 自动化构建缓存
+    # 6. 挂载 Gradle 编译加速缓存
     - name: Setup Gradle Cache for Fast Build
       if: env.PROJECT_NAME != 'v2rayN' && env.PROJECT_NAME != 'FlClash'
       uses: gradle/actions/setup-gradle@v3
       with:
         cache-read-only: false 
 
-    # 7. 配置 .NET 环境 (.NET 桌面端项目专用)
+    # 7. 配置 .NET 环境
     - name: Set up .NET SDK
       if: env.PROJECT_NAME == 'v2rayN'
       uses: actions/setup-dotnet@v4
       with:
         dotnet-version: '8.0.x'
 
-    # 8. 配置 Flutter 环境 (Flutter 跨端项目专用)
+    # 8. 配置 Flutter 环境
     - name: Set up Flutter
       if: env.PROJECT_NAME == 'FlClash'
       uses: subosito/flutter-action@v2
@@ -136,23 +136,40 @@ jobs:
         fi
 
     # =================================================================
-    # 执行层：无缝同步原项目 Actions 步骤的高速独立执行区
+    # 执行层：无缝对齐原项目底层编译流程
     # =================================================================
     - name: Reference and Execute Native Project Build Process
       shell: bash
       run: |
         echo "==== 正在启动原项目对齐构建线程 ===="
         
-        # 补全交叉编译核心环境变量，防止底层 C 桥接符号在干净虚拟机上找不到
         export CGO_ENABLED=1
         export GRADLE_OPTS="-Xmx4g -XX:MaxMetaspaceSize=1g -XX:+UseG1GC -Dorg.gradle.jvmargs=-Xmx4g"
         
         case "${{ env.PROJECT_NAME }}" in
           
           "NekoBoxForAndroid")
+            # 1. 现场安装对齐的原生 GoMobile 基础工具链
+            go install golang.org/x/mobile/cmd/gomobile@latest
+            go install golang.org/x/mobile/cmd/gobind@latest
+            echo "$HOME/go/bin" >> $GITHUB_PATH
+            $HOME/go/bin/gomobile init
+            
+            # 2. 【核心主动填坑】寻找 NekoBox 核心存放目录并现场生成 libcore.aar
+            # 探测本地代码结构中专门存放 go 核心的路径（通常在项目根目录、单独的 lib 目录或 libs 目录下）
+            CORE_DIR=""
+            if [ -d "lib" ]; then CORE_DIR="lib"; elif [ -d "libs" ]; then CORE_DIR="libs"; fi
+            
+            if [ ! -z "$CORE_DIR" ] && [ -f "$CORE_DIR/go.mod" ]; then
+              echo "⚙️ 正在进入 $CORE_DIR 现场生成底层依赖内核库..."
+              cd $CORE_DIR
+              # 执行核心绑定生成，输出包名和路径跟 Kotlin 代码完全对齐
+              $HOME/go/bin/gomobile bind -v -androidapi 21 -target android -o libcore.aar .
+              cd ..
+            fi
+            
+            # 3. 回到主应用目录拉起打包，此时 Kotlin 编译就不会再报找不到类的错误了
             chmod +x gradlew
-            echo "go.dir=$(which go | sed 's/\/bin\/go//')" >> local.properties
-            echo "🚀 优化：精准编译 NekoBox 核心 Fdroid 渠道包，拒绝全渠道并开浪费时间..."
             ./gradlew :app:assembleFdroidRelease --stacktrace
             ;;
             
@@ -182,7 +199,7 @@ jobs:
             ;;
         esac
 
-    # 🟢 针对 v2rayN Windows 桌面端专用的高效率原生独立发布步骤
+    # 🟢 针对 v2rayN Windows 桌面端
     - name: Execute Native Project Build Process [Windows v2rayN]
       if: env.PROJECT_NAME == 'v2rayN'
       shell: pwsh
@@ -191,7 +208,7 @@ jobs:
         dotnet publish v2rayN/v2rayN.csproj -c Release -r win-x64 --self-contained true /p:PublishSingleFile=true /p:PublishReadyToRun=true
 
     # =================================================================
-    # 产物层：大一统高精确度搜集矩阵
+    # 产物层
     # =================================================================
     - name: Archive and Upload Artifacts
       uses: actions/upload-artifact@v4
