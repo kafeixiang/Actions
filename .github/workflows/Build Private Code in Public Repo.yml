@@ -38,10 +38,8 @@ jobs:
         run: |
           RAW="${{ github.event.inputs.repo_and_branch }}"
           if echo "$RAW" | grep -q "v2rayN"; then
-            # v2rayN 纯 .NET 构建，维持原厂推荐的 Windows 原生宿主机环境
             echo "os_runner=windows-latest" >> $GITHUB_OUTPUT
           else
-            # 严格遵照指令：husi (包含dev-3 macOS端交叉编译)、FlClash、Neko 等全部汇聚在 Linux 节点上跑
             echo "os_runner=ubuntu-24.04" >> $GITHUB_OUTPUT
           fi
 
@@ -73,7 +71,7 @@ jobs:
         ref: ${{ env.TARGET_BRANCH }}
         fetch-depth: 1
 
-    # 3. 深度递归拉取所有子模块（严防底层多平台核心代码缺失导致编译断链）
+    # 3. 深度递归拉取所有子模块
     - name: Clone Submodules
       shell: bash
       run: |
@@ -118,17 +116,14 @@ jobs:
         channel: 'stable'
         cache: true
 
-    # 8. 【husi dev-3 特异化】全套部署 Linux-to-Mac 交叉编译核心工具链与 CGO 基础环境
+    # 8. 【husi dev-3 专项补丁】全套部署 Linux 下交叉编译 Mac 所需的 Clang 基础依赖
     - name: Inject Rigorous Linux-to-Mac Cross-Compilation Toolchain
       if: env.PROJECT_NAME == 'husi'
       shell: bash
       run: |
-        echo "⚙️ [husi 专项修补] 正在部署 Linux 下编译 Apple Darwin 的超严苛工具链..."
+        echo "⚙️ [husi 专项修补] 正在部署 Linux 下编译 Apple Darwin 的工具链..."
         sudo apt-get update
         sudo apt-get install -y clang llvm libxml2-dev uuid-dev patch libssl-dev make
-        
-        # 预先注入全套交叉编译所必须的 Apple 头文件映射别名
-        # 严格杜绝 Linux 链接 CGO 库时抛出 C 编译器不兼容的报错
         echo "CC=clang" >> $GITHUB_ENV
         echo "CXX=clang++" >> $GITHUB_ENV
 
@@ -138,64 +133,70 @@ jobs:
       shell: bash
       run: |
         echo "sdk.dir=$ANDROID_HOME" > local.properties
-        NDK_PATH=$(ls -d $ANDROID_HOME/ndk/* 2>/dev/null | sort -V | tail -n 1 || echo "")
+        
+        if [ "${{ env.PROJECT_NAME }}" = "ClashMetaForAndroid" ]; then
+          NDK_PATH=$(ls -d $ANDROID_HOME/ndk/25* 2>/dev/null || ls -d $ANDROID_HOME/ndk/26* 2>/dev/null || ls -d $ANDROID_HOME/ndk/* | tail -n 1)
+        else
+          NDK_PATH=$(ls -d $ANDROID_HOME/ndk/* 2>/dev/null | sort -V | tail -n 1 || echo "")
+        fi
+        
         if [ ! -z "$NDK_PATH" ]; then
           echo "ndk.dir=$NDK_PATH" >> local.properties
           echo "ANDROID_NDK_HOME=$NDK_PATH" >> $GITHUB_ENV
         fi
 
     # =================================================================
-    # 执行层：无缝对齐原厂工作流，拒绝对打包脚本进行盲猜干扰
+    # 执行层：无缝对齐原厂工作流，拒绝外部盲猜命令
     # =================================================================
     - name: Reference and Execute Native Project Build Process
       shell: bash
       run: |
-        echo "==== 正在启动原装 CI 闭环打包线程 ===="
+        echo "==== 正在启动原厂 CI 闭环打包线程 ===="
         
+        export CGO_ENABLED=1
         export GRADLE_OPTS="-Xmx4g -XX:MaxMetaspaceSize=1g -XX:+UseG1GC -Dorg.gradle.jvmargs=-Xmx4g"
         
         case "${{ env.PROJECT_NAME }}" in
           
           "husi")
-            # 💡 完全交还控制权：赋予 dev-3 分支下所有的原生打包脚本最高执行权限
             find . -name "*.sh" -o -name "gradlew" -o -name "Makefile" | xargs chmod +x || true
-            
             echo "⚙️ [husi dev-3 专线] 正在检索并严格执行原项目内置的编译链..."
             
-            # 第一优先级：如果你的 dev-3 仓内有原装一键编译脚本（如 build.sh），让其完美接管
             if [ -f "build.sh" ]; then
-              echo "🎯 启动原厂 build.sh 执行流..."
               ./build.sh --all || ./build.sh macos || ./build.sh
-            # 第二优先级：如果 dev-3 依赖的是传统的 Makefile 任务
             elif [ -f "Makefile" ] || [ -f "makefile" ]; then
-              echo "🎯 启动原厂 Makefile 执行流..."
               make macos || make all || make
-            # 终极硬核兜底：若分支属于纯裸 Go，则直接拉起无缝交叉编译命令硬核输出 Mac 全架构端与 Android 端
             else
-              echo "⚠️ 未检索到自动化脚本，正在以最严格的 CGO 交叉参数强行输出 Mac 产物..."
-              export CGO_ENABLED=1
-              
-              # 编译 Mac AMD64 架构
               export GOOS=darwin GOARCH=amd64
               go build -v -ldflags="-s -w" -o husi-mac-amd64 .
-              
-              # 编译 Mac ARM64 (M系列芯片) 架构
               export GOOS=darwin GOARCH=arm64
               go build -v -ldflags="-s -w" -o husi-mac-arm64 .
             fi
             
-            # 若 husi 内包含 Android 端多项目拓扑工程，一并协同产出，绝不漏掉任何一个平台
             if [ -f "gradlew" ]; then
-              echo "⚙️ [husi 专线] 检测到内置 Android 模块，正在追加编译 Android APK..."
               ./gradlew assembleRelease --stacktrace
             fi
             ;;
 
           "NekoBoxForAndroid")
-            # 严格使用 MatsuriDayo 的专属魔改版工具链，保障包名及底层绑定完全对齐
-            echo "⚙️ [Matsuri 专线] 正在编译安装指定的 MatsuriDayo 专属魔改 gomobile..."
-            go install github.com/MatsuriDayo/gomobile/cmd/gomobile@latest
-            go install github.com/MatsuriDayo/gomobile/cmd/gobind@latest
+            # 🚀【终极破局：就地无感源码级注入】
+            # 解决 go install 因为魔改库 go.mod 声明不匹配闪退的问题
+            echo "⚙️ [Matsuri 专线] 正在通过源码就地构建流程注入 Matsuri 专用版 GoMobile..."
+            mkdir -p $STAGE_DIR/gomobile-src
+            cd $STAGE_DIR/gomobile-src
+            
+            # 从官方建立基础骨架，再利用 git 强制将 Matsuri 远程的魔改代码就地无损融合
+            git init
+            git remote add origin https://github.com/MatsuriDayo/gomobile.git
+            git fetch --depth=1 origin
+            git checkout FETCH_HEAD
+            
+            # 利用本地相对路径进行编译就地安装，彻底绕过 Go 的包名校验大坑！
+            go install ./cmd/gomobile
+            go install ./cmd/gobind
+            
+            # 回到主应用空间挂载环境
+            cd $GITHUB_WORKSPACE
             echo "$HOME/go/bin" >> $GITHUB_PATH
             $HOME/go/bin/gomobile init
             echo "go.dir=$(which go | sed 's/\/bin\/go//')" >> local.properties
@@ -217,21 +218,19 @@ jobs:
             ;;
             
           "FlClash")
-            # 全平台打包：在 Linux 下不仅支持利用 Flutter 编译 Android 端的 APK
             if [ -f "android/app/build.gradle" ]; then
               sed -i 's/signingConfigs.release/signingConfigs.debug/g' android/app/build.gradle
             fi
             flutter pub get
             flutter build apk --release
             
-            # 针对 FlClash 自带的 Linux 桌面端打包，直接追加硬核生成产物（.deb等），实现跨多端覆盖
             if flutter devices | grep -q "linux"; then
                flutter build linux --release || true
             fi
             ;;
             
           *)
-            echo "当前项目非标准 Linux 构建分支，跳过此块执行"
+            echo "跳过 Linux 执行"
             ;;
         esac
 
@@ -244,7 +243,7 @@ jobs:
         dotnet publish v2rayN/v2rayN.csproj -c Release -r win-x64 --self-contained true /p:PublishSingleFile=true /p:PublishReadyToRun=true
 
     # =================================================================
-    # 产物层：地毯式深度打捞所有成功编译出来的多端安装包
+    # 产物层
     # =================================================================
     - name: Archive and Upload Artifacts
       uses: actions/upload-artifact@v4
