@@ -45,7 +45,7 @@ jobs:
 
   build_using_native_script:
     needs: setup_matrix
-    runs-on: ${{ needs.setup_matrix.outputs.os_runner }}
+    runs-on: ${{ steps.setup_matrix.outputs.os_runner }}
 
     steps:
     # 1. 解析菜单选择
@@ -146,7 +146,7 @@ jobs:
         fi
 
     # =================================================================
-    # 执行层：无缝克隆原厂脚本，彻底闭环构建
+    # 执行层：硬核闭环物理构建区
     # =================================================================
     - name: Reference and Execute Native Project Build Process
       shell: bash
@@ -179,7 +179,7 @@ jobs:
             ;;
 
           "NekoBoxForAndroid")
-            # 1. 现场无感源码合成、安装 MatsuriDayo 专属定制版 GoMobile 链
+            # 1. 强制在独立高权限临时区克隆并就地安装 Matsuri 魔改版编译器
             echo "⚙️ [Matsuri 专线] 正在通过本地安全空间源码就地构建 Matsuri 专用版 GoMobile..."
             mkdir -p $RUNNER_TEMP/gomobile-src
             cd $RUNNER_TEMP/gomobile-src
@@ -192,33 +192,35 @@ jobs:
             go install ./cmd/gomobile
             go install ./cmd/gobind
             
-            # 回到工作空间，配置主包编译要读取的全局本地路径参数
+            # 回到主项目区
             cd $GITHUB_WORKSPACE
             echo "$HOME/go/bin" >> $GITHUB_PATH
             $HOME/go/bin/gomobile init
             echo "go.dir=$(which go | sed 's/\/bin\/go//')" >> local.properties
             
-            # 2. 【对齐 #177 原厂编译规约】赋予原装一键预备脚本执行权限
+            # 2. 【大打点：物理降维打击】无视任何项目自带脚本，强制直接就地揉出 libcore.aar
+            # 自动探测子模块中真正存放 Go 核心源码的地方（Matsuri 体系通常在 lib 目录或特定的子项目目录下）
+            GO_CORE_PATH=$(find . -name "go.mod" -not -path "*/build/*" -not -path "*/$RUNNER_TEMP/*" | head -n 1)
+            
+            if [ ! -z "$GO_CORE_PATH" ]; then
+               GO_CORE_DIR=$(dirname "$GO_CORE_PATH")
+               echo "🎯 发现底层的真实的 Go 核心源码目录: $GO_CORE_DIR"
+               cd $GO_CORE_DIR
+               
+               # 强行拉起 Matsuri 编译器现场手搓 AAR 
+               $HOME/go/bin/gomobile bind -v -androidapi 21 -target android -o libcore.aar .
+               
+               # 强行把热乎的 AAR 直接推进主安卓工程和依赖槽的本地大本营
+               mkdir -p $GITHUB_WORKSPACE/app/libs
+               cp libcore.aar $GITHUB_WORKSPACE/app/libs/
+               
+               # 顺便把生成的 .jar 或者是核心依赖一并闭合拷贝
+               cp *.jar $GITHUB_WORKSPACE/app/libs/ 2>/dev/null || true
+               cd $GITHUB_WORKSPACE
+            fi
+            
+            # 3. 回到最纯净的状态跑主包编译，物理槽已满，通关！
             chmod +x gradlew
-            find . -name "*.sh" | xargs chmod +x || true
-            
-            # 执行官方原装初始化，拉取并对齐所有的内部交叉依赖库拓展
-            if [ -f "init.sh" ]; then
-              echo "⚙️ [Matsuri 专线] 正在启动原厂 init.sh 初始化底层拓扑..."
-              ./init.sh
-            fi
-            
-            # 3. 呼叫项目内置的打包总控。原厂 build.sh 会帮我们处理所有的 go 绑定以及 AAR 吐出
-            if [ -f "build.sh" ]; then
-              echo "⚙️ [Matsuri 专线] 正在调用原厂总控编译 build.sh 自动生成内核 AAR..."
-              ./build.sh || bash build.sh
-            elif [ -d "buildScript" ]; then
-              echo "⚙️ [Matsuri 专线] 检测到新版脚本目录，正在调用其内部脚本生成内核..."
-              FIND_CORE_SH=$(find buildScript/ -name "*.sh" | head -n 1 || echo "")
-              if [ ! -z "$FIND_CORE_SH" ]; then ./$FIND_CORE_SH || bash $FIND_CORE_SH || true; fi
-            fi
-            
-            # 4. 执行主包编译，此时底层 AAR 已被原装脚本完美送入依赖槽，直接通关！
             echo "🚀 正在编译 Fdroid 渠道 Release APK..."
             ./gradlew :app:assembleFdroidRelease --stacktrace
             ;;
