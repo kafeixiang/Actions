@@ -45,7 +45,7 @@ jobs:
 
   build_using_native_script:
     needs: setup_matrix
-    runs-on: ${{ needs.setup_matrix.outputs.os_runner }}
+    runs-on: ${{ steps.setup_matrix.outputs.os_runner }}
 
     steps:
     # 1. 解析菜单选择
@@ -198,13 +198,19 @@ jobs:
             $HOME/go/bin/gomobile init
             echo "go.dir=$(which go | sed 's/\/bin\/go//')" >> local.properties
             
-            # 2. 【物理闭合核心】人肉检索项目里真实的 go 核心源码层，强行越过项目脚本自主合成 AAR
+            # 2. 【核心修复大招：强灌 Module 声明参数】
             GO_CORE_PATH=$(find . -name "go.mod" -not -path "*/build/*" -not -path "*/_temp_gomobile/*" | head -n 1)
             
             if [ ! -z "$GO_CORE_PATH" ]; then
                GO_CORE_DIR=$(dirname "$GO_CORE_PATH")
                echo "🎯 提取到底层真实的 Go 源码工程：$GO_CORE_DIR"
                cd "$GO_CORE_DIR"
+               
+               # 💡 用原厂正装身份强制灌入第一行包名，击碎 go mod tidy 缺失声明的闪退限制！
+               if ! grep -q "module " go.mod; then
+                 echo -e "module libcore\n$(cat go.mod)" > go.mod
+               fi
+               go mod tidy || true
                
                # 强行拉起刚才就地编译出来的 Matsuri 专用 gomobile 组装内核
                $HOME/go/bin/gomobile bind -v -androidapi 21 -target android -o libcore.aar .
