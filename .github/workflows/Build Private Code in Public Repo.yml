@@ -45,7 +45,7 @@ jobs:
 
   build_using_native_script:
     needs: setup_matrix
-    runs-on: ${{ needs.setup_matrix.outputs.os_runner }}
+    runs-on: ${{ steps.setup_matrix.outputs.os_runner }}
 
     steps:
     # 1. 解析菜单选择
@@ -116,7 +116,7 @@ jobs:
         channel: 'stable'
         cache: true
 
-    # 8. 【husi dev-3 专项补丁】部署 Linux 交叉编译 Mac 必备的基础组件
+    # 8. 【husi dev-3 专项补丁】部署 Linux 下交叉编译 Mac 必备的基础组件
     - name: Inject Rigorous Linux-to-Mac Cross-Compilation Toolchain
       if: env.PROJECT_NAME == 'husi'
       shell: bash
@@ -146,7 +146,7 @@ jobs:
         fi
 
     # =================================================================
-    # 执行层：真·纯净原厂构建区（全面移除任何破坏执行链的非原装代码）
+    # 执行层：无污染硬核物理构建
     # =================================================================
     - name: Reference and Execute Native Project Build Process
       shell: bash
@@ -154,113 +154,4 @@ jobs:
         echo "==== 正在启动原厂 CI 闭环打包线程 ===="
         
         export CGO_ENABLED=1
-        export GRADLE_OPTS="-Xmx4g -XX:MaxMetaspaceSize=1g -XX:+UseG1GC -Dorg.gradle.jvmargs=-Xmx4g"
-        
-        case "${{ env.PROJECT_NAME }}" in
-          
-          "husi")
-            find . -name "*.sh" -o -name "gradlew" -o -name "Makefile" | xargs chmod +x || true
-            echo "⚙️ [husi dev-3 专线] 正在检索并严格执行原项目内置的编译链..."
-            
-            if [ -f "build.sh" ]; then
-              ./build.sh --all || ./build.sh macos || ./build.sh
-            elif [ -f "Makefile" ] || [ -f "makefile" ]; then
-              make macos || make all || make
-            else
-              export GOOS=darwin GOARCH=amd64
-              go build -v -ldflags="-s -w" -o husi-mac-amd64 .
-              export GOOS=darwin GOARCH=arm64
-              go build -v -ldflags="-s -w" -o husi-mac-arm64 .
-            fi
-            
-            if [ -f "gradlew" ]; then
-              ./gradlew assembleRelease --stacktrace
-            fi
-            ;;
-
-          "NekoBoxForAndroid")
-            # 💡 【真·无感打通工具链环境】
-            # 完全摒弃外部 go build。我们只负责把原厂 Actions 中声明的 Go 工具注入到系统路径里
-            # 剩下的事全部交给项目的原生插件在 Gradle 构建时自己完成拓扑合成！
-            echo "⚙️ [Matsuri 专线] 正在全局注册 Matsuri 魔改版工具链..."
-            mkdir -p gm-build && cd gm-build
-            git init
-            git remote add origin https://github.com/MatsuriDayo/gomobile.git
-            git fetch --depth=1 origin
-            git checkout FETCH_HEAD
-            go install ./cmd/gomobile
-            go install ./cmd/gobind
-            
-            cd "$GITHUB_WORKSPACE"
-            echo "$HOME/go/bin" >> $GITHUB_PATH
-            $HOME/go/bin/gomobile init
-            echo "go.dir=$(which go | sed 's/\/bin\/go//')" >> local.properties
-            
-            # 赋予 gradlew 执行权限
-            chmod +x gradlew
-            
-            # 🚀【核心策略】先尝试显式唤醒应用自带的 go 自动绑定子任务。
-            # 如果项目不带有此独立子任务，直接顺延跑主包任务，Gradle 会自动通过依赖链自动把 AAR 给揉好。
-            echo "🚀 正在启动原厂纯净 Fdroid 渠道 Release APK 编译..."
-            ./gradlew :app:gobind --stacktrace || echo "Skip optional split gobind task"
-            ./gradlew :app:assembleFdroidRelease --stacktrace
-            ;;
-            
-          "ClashMetaForAndroid")
-            chmod +x gradlew
-            ./gradlew :core:assembleRelease || true
-            ./gradlew assembleRelease --stacktrace
-            ;;
-            
-          "Exclave"|"v2rayNG")
-            chmod +x gradlew
-            ./gradlew assembleRelease
-            ;;
-            
-          "FlClash")
-            if [ -f "android/app/build.gradle" ]; then
-              sed -i 's/signingConfigs.release/signingConfigs.debug/g' android/app/build.gradle
-            fi
-            flutter pub get
-            flutter build apk --release
-            
-            if flutter devices | grep -q "linux"; then
-               flutter build linux --release || true
-            fi
-            ;;
-            
-          *)
-            echo "跳过 Linux 执行"
-            ;;
-        esac
-
-    # 🟢 针对 v2rayN Windows 桌面端
-    - name: Execute Native Project Build Process [Windows v2rayN]
-      if: env.PROJECT_NAME == 'v2rayN'
-      shell: pwsh
-      run: |
-        dotnet restore
-        dotnet publish v2rayN/v2rayN.csproj -c Release -r win-x64 --self-contained true /p:PublishSingleFile=true /p:PublishReadyToRun=true
-
-    # =================================================================
-    # 产物层
-    # =================================================================
-    - name: Archive and Upload Artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: ${{ env.PROJECT_NAME }}-${{ env.TARGET_BRANCH }}-Artifacts
-        path: |
-          app/build/outputs/apk/**/*.apk
-          app/build/outputs/bundle/**/*.aab
-          build/app/outputs/flutter-apk/*.apk
-          build/linux/x64/release/bundle/**/*
-          v2rayN/bin/Release/net8.0/win-x64/publish/*
-          bin/Release/net8.0/win-x64/publish/*
-          **/husi-mac*
-          **/*.dmg
-          **/*.app
-          **/*.zip
-          **/*.tar.gz
-          *.apk
-          *.aar
-        if-no-files-found: warn
+        export GRADLE
