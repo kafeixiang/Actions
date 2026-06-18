@@ -116,7 +116,7 @@ jobs:
         channel: 'stable'
         cache: true
 
-    # 8. 【husi dev-3 专项补丁】部署 Linux 下交叉编译 Mac 必备的基础组件
+    # 8. 【husi dev-3 专项补丁】部署 Linux 交叉编译 Mac 必备的基础组件
     - name: Inject Rigorous Linux-to-Mac Cross-Compilation Toolchain
       if: env.PROJECT_NAME == 'husi'
       shell: bash
@@ -146,7 +146,7 @@ jobs:
         fi
 
     # =================================================================
-    # 执行层：安全防冲突物理构建区
+    # 执行层：真·纯净原厂构建区（全面移除任何破坏执行链的非原装代码）
     # =================================================================
     - name: Reference and Execute Native Project Build Process
       shell: bash
@@ -179,9 +179,11 @@ jobs:
             ;;
 
           "NekoBoxForAndroid")
-            echo "⚙️ [Matsuri 专线] 正在构建工具链..."
-            mkdir -p gm-build
-            cd gm-build
+            # 💡 【真·无感打通工具链环境】
+            # 完全摒弃外部 go build。我们只负责把原厂 Actions 中声明的 Go 工具注入到系统路径里
+            # 剩下的事全部交给项目的原生插件在 Gradle 构建时自己完成拓扑合成！
+            echo "⚙️ [Matsuri 专线] 正在全局注册 Matsuri 魔改版工具链..."
+            mkdir -p gm-build && cd gm-build
             git init
             git remote add origin https://github.com/MatsuriDayo/gomobile.git
             git fetch --depth=1 origin
@@ -194,31 +196,13 @@ jobs:
             $HOME/go/bin/gomobile init
             echo "go.dir=$(which go | sed 's/\/bin\/go//')" >> local.properties
             
-            # 安全无偏见匹配：自动挖掘真实的 go 核心工程目录
-            GO_CORE_PATH=$(find . -name "go.mod" -not -path "*/build/*" -not -path "*/gm-build/*" | head -n 1)
-            
-            if [ ! -z "$GO_CORE_PATH" ]; then
-               GO_CORE_DIR=$(dirname "$GO_CORE_PATH")
-               echo "🎯 提取到底层真实的 Go 源码工程：$GO_CORE_DIR"
-               cd "$GO_CORE_DIR"
-               
-               # 💡 格式纠正核心：全面替换旧版容易冲突的引号和覆盖语句，转用 printf 纯净流重刷 go.mod
-               if ! grep -q "module " go.mod; then
-                 OLD_CONTENT=$(cat go.mod)
-                 printf "module libcore\n\n%%s" "$OLD_CONTENT" > go.mod
-               fi
-               
-               go mod tidy || true
-               $HOME/go/bin/gomobile bind -v -androidapi 21 -target android -o libcore.aar .
-               
-               mkdir -p "$GITHUB_WORKSPACE/app/libs"
-               cp libcore.aar "$GITHUB_WORKSPACE/app/libs/"
-               cp *.jar "$GITHUB_WORKSPACE/app/libs/" 2>/dev/null || true
-               cd "$GITHUB_WORKSPACE"
-            fi
-            
+            # 赋予 gradlew 执行权限
             chmod +x gradlew
-            echo "🚀 正在编译 Fdroid 渠道 Release APK..."
+            
+            # 🚀【核心策略】先尝试显式唤醒应用自带的 go 自动绑定子任务。
+            # 如果项目不带有此独立子任务，直接顺延跑主包任务，Gradle 会自动通过依赖链自动把 AAR 给揉好。
+            echo "🚀 正在启动原厂纯净 Fdroid 渠道 Release APK 编译..."
+            ./gradlew :app:gobind --stacktrace || echo "Skip optional split gobind task"
             ./gradlew :app:assembleFdroidRelease --stacktrace
             ;;
             
