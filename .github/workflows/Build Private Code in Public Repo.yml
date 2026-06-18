@@ -45,7 +45,7 @@ jobs:
 
   build_using_native_script:
     needs: setup_matrix
-    runs-on: ${{ steps.setup_matrix.outputs.os_runner }}
+    runs-on: ${{ needs.setup_matrix.outputs.os_runner }}
 
     steps:
     # 1. 解析菜单选择
@@ -116,12 +116,11 @@ jobs:
         channel: 'stable'
         cache: true
 
-    # 8. 【husi dev-3 专项补丁】部署 Linux 下交叉编译 Mac 必备的基础组件
+    # 8. 【husi dev-3 专项补丁】部署 Linux 编译 Apple Darwin 的必备底层依赖
     - name: Inject Rigorous Linux-to-Mac Cross-Compilation Toolchain
       if: env.PROJECT_NAME == 'husi'
       shell: bash
       run: |
-        echo "⚙️ [husi 专项修补] 正在部署 Linux 下编译 Apple Darwin 的工具链..."
         sudo apt-get update
         sudo apt-get install -y clang llvm libxml2-dev uuid-dev patch libssl-dev make
         echo "CC=clang" >> $GITHUB_ENV
@@ -133,35 +132,79 @@ jobs:
       shell: bash
       run: |
         echo "sdk.dir=$ANDROID_HOME" > local.properties
-        
         if [ "${{ env.PROJECT_NAME }}" = "ClashMetaForAndroid" ]; then
           NDK_PATH=$(ls -d $ANDROID_HOME/ndk/25* 2>/dev/null || ls -d $ANDROID_HOME/ndk/26* 2>/dev/null || ls -d $ANDROID_HOME/ndk/* | tail -n 1)
         else
           NDK_PATH=$(ls -d $ANDROID_HOME/ndk/* 2>/dev/null | sort -V | tail -n 1 || echo "")
         fi
-        
         if [ ! -z "$NDK_PATH" ]; then
           echo "ndk.dir=$NDK_PATH" >> local.properties
           echo "ANDROID_NDK_HOME=$NDK_PATH" >> $GITHUB_ENV
         fi
 
     # =================================================================
-    # 执行层：无污染硬核物理构建
+    # 核心步骤隔离：现场本地编译专属魔改版 GoMobile 工具链
+    # =================================================================
+    - name: Compile and Install Matsuri Custom GoMobile
+      if: env.PROJECT_NAME == 'NekoBoxForAndroid'
+      shell: bash
+      run: |
+        echo "⚙️ 正在就地独立编译 Matsuri 魔改版工具链..."
+        mkdir -p "${{ github.workspace }}/gm-build-bin"
+        cd "${{ github.workspace }}/gm-build-bin"
+        git init
+        git remote add origin https://github.com/MatsuriDayo/gomobile.git
+        git fetch --depth=1 origin
+        git checkout FETCH_HEAD
+        go install ./cmd/gomobile
+        go install ./cmd/gobind
+        echo "$HOME/go/bin" >> $GITHUB_PATH
+
+    # =================================================================
+    # 核心步骤隔离：强行做物理补丁并直接输出 AAR 填满物理槽
+    # =================================================================
+    - name: Hardcore Force Bind Kernel AAR
+      if: env.PROJECT_NAME == 'NekoBoxForAndroid'
+      shell: bash
+      run: |
+        export CGO_ENABLED=1
+        cd "$GITHUB_WORKSPACE"
+        
+        # 自动捞取真实的 Go 核心位置
+        GO_CORE_PATH=$(find . -name "go.mod" -not -path "*/build/*" -not -path "*/gm-build-bin/*" | head -n 1)
+        if [ ! -z "$GO_CORE_PATH" ]; then
+          GO_CORE_DIR=$(dirname "$GO_CORE_PATH")
+          echo "🎯 进驻底层 Go 源码目录：$GO_CORE_DIR"
+          cd "$GO_CORE_DIR"
+          
+          # 格式彻底闭合安全解：注入合法 module 声明并强切断破环链的本地物理 replace 映射
+          if ! grep -q "module " go.mod; then
+            sed -i '1s/^/module libcore\n\n/' go.mod
+          fi
+          sed -i '/replace/d' go.mod || true
+          
+          go mod tidy || true
+          $HOME/go/bin/gomobile init || gomobile init
+          $HOME/go/bin/gomobile bind -v -androidapi 21 -target android -o libcore.aar . || true
+          
+          mkdir -p "$GITHUB_WORKSPACE/app/libs"
+          cp -f libcore.aar "$GITHUB_WORKSPACE/app/libs/" 2>/dev/null || true
+          cp -f *.jar "$GITHUB_WORKSPACE/app/libs/" 2>/dev/null || true
+        fi
+
+    # =================================================================
+    # 执行层：纯净多项目原厂编译总控
     # =================================================================
     - name: Reference and Execute Native Project Build Process
       shell: bash
       run: |
         echo "==== 正在启动原厂 CI 闭环打包线程 ===="
-        
         export CGO_ENABLED=1
-        export GRADLE_OPTS="-Xmx4g -XX:MaxMetaspaceSize=1g -XX:+UseG1GC -Dorg.gradle.jvmargs=-Xmx4g"
         
         case "${{ env.PROJECT_NAME }}" in
           
           "husi")
             find . -name "*.sh" -o -name "gradlew" -o -name "Makefile" | xargs chmod +x || true
-            echo "⚙️ [husi dev-3 专线] 正在检索并严格执行原项目内置的编译链..."
-            
             if [ -f "build.sh" ]; then
               ./build.sh --all || ./build.sh macos || ./build.sh
             elif [ -f "Makefile" ] || [ -f "makefile" ]; then
@@ -172,59 +215,15 @@ jobs:
               export GOOS=darwin GOARCH=arm64
               go build -v -ldflags="-s -w" -o husi-mac-arm64 .
             fi
-            
             if [ -f "gradlew" ]; then
               ./gradlew assembleRelease --stacktrace
             fi
             ;;
 
           "NekoBoxForAndroid")
-            # 1. 现场就地纯源码安装并初始化 Matsuri 魔改版工具链
-            echo "⚙️ [Matsuri 专线] 正在构建专门适配 NekoBox 包名的魔改编译器..."
-            mkdir -p gm-build && cd gm-build
-            git init
-            git remote add origin https://github.com/MatsuriDayo/gomobile.git
-            git fetch --depth=1 origin
-            git checkout FETCH_HEAD
-            go install ./cmd/gomobile
-            go install ./cmd/gobind
-            
-            cd "$GITHUB_WORKSPACE"
-            echo "$HOME/go/bin" >> $GITHUB_PATH
-            $HOME/go/bin/gomobile init
             echo "go.dir=$(which go | sed 's/\/bin\/go//')" >> local.properties
-            
-            # 2. 【大招：强行通过 GoBridge 物理生成 AAR 填满依赖槽】
-            # 用系统的无感探针直接去抓取你项目中存放松散 Go 核心的源码位置
-            REAL_CORE_MOD=$(find . -name "go.mod" -not -path "*/build/*" -not -path "*/gm-build/*" | head -n 1 || echo "")
-            
-            if [ ! -z "$REAL_CORE_MOD" ]; then
-              GO_CORE_DIR=$(dirname "$REAL_CORE_MOD")
-              echo "🎯 发现底层的真实的 Go 核心源码目录: $GO_CORE_DIR"
-              cd "$GO_CORE_DIR"
-              
-              # 关键修复：防止魔改分支下 go.mod 包名丢失或缺失，用安全符号结构直接前置重刷注入合法骨架
-              if ! grep -q "module " go.mod; then
-                printf "module libcore\n\n$(cat go.mod)" > go.mod
-              fi
-              
-              # 在生成前排除任何由于相对路径 replace（比如 ../../libneko）导致的断链报错，强制移除本地越界依赖
-              sed -i '/replace/d' go.mod || true
-              go mod tidy || true
-              
-              # 用刚才安装的 Matsuri 专属包名导出器强制生成完美闭合的 AAR 文件
-              $HOME/go/bin/gomobile bind -v -androidapi 21 -target android -o libcore.aar . || true
-              
-              # 物理强插：不管 Gradle 自带的任务认不认识，强制把它送进 app 模块默认的 libs 本地依赖槽
-              mkdir -p "$GITHUB_WORKSPACE/app/libs"
-              cp -f *.aar "$GITHUB_WORKSPACE/app/libs/" 2>/dev/null || true
-              cp -f *.jar "$GITHUB_WORKSPACE/app/libs/" 2>/dev/null || true
-              cd "$GITHUB_WORKSPACE"
-            fi
-            
-            # 3. 彻底删除任何可能导致报错闪退的 ./gradlew 自定义任务，用纯净状态跑起打包
             chmod +x gradlew
-            echo "🚀 物理槽已闭合，开始拉起 NekoBox 官方变体主任务编译..."
+            echo "🚀 物理依赖槽已对齐，拉起原厂变体打包主进程..."
             ./gradlew :app:assembleFdroidRelease --stacktrace
             ;;
             
@@ -245,14 +244,13 @@ jobs:
             fi
             flutter pub get
             flutter build apk --release
-            
             if flutter devices | grep -q "linux"; then
                flutter build linux --release || true
             fi
             ;;
             
           *)
-            echo "跳过 Linux 执行"
+            echo "当前系统已无多余 Linux 编译块"
             ;;
         esac
 
