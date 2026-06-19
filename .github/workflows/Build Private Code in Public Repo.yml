@@ -161,7 +161,7 @@ jobs:
         echo "$HOME/go/bin" >> $GITHUB_PATH
 
     # =================================================================
-    # 核心步骤隔离：强行物理平铺源码依赖，阻断相对路径无法识别的大坑
+    # 核心步骤隔离：强行建立 Go 全局工作区，降维打击任何相对路径缺陷
     # =================================================================
     - name: Hardcore Force Bind Kernel AAR
       if: env.PROJECT_NAME == 'NekoBoxForAndroid'
@@ -170,35 +170,41 @@ jobs:
         export CGO_ENABLED=1
         cd "$GITHUB_WORKSPACE"
         
-        # 自动捞取主应用下真正的 Go 核心层模块目录位置
+        # 精准捕获项目中被递归克隆下来的所有核心源码路径
         GO_CORE_PATH=$(find . -name "go.mod" -not -path "*/build/*" -not -path "*/gm-build-bin/*" | head -n 1)
         if [ ! -z "$GO_CORE_PATH" ]; then
           GO_CORE_DIR=$(dirname "$GO_CORE_PATH")
-          echo "🎯 进驻底层 Go 源码工程：$GO_CORE_DIR"
           
-          # 💡 【物理覆写：彻底斩断断链盲区】
-          # 用 find 去精准捕捉递归拉下来的 sing-box 和 libneko
-          FIND_SUB_SB=$(find "$GITHUB_WORKSPACE" -maxdepth 4 -name "go.mod" | grep "sing-box" | head -n 1 || echo "")
-          FIND_SUB_LN=$(find "$GITHUB_WORKSPACE" -maxdepth 4 -name "go.mod" | grep "libneko" | head -n 1 || echo "")
+          # 自动捞取子模块里的物理绝对路径
+          SUB_SB_PATH=$(find "$GITHUB_WORKSPACE" -maxdepth 4 -name "go.mod" | grep "sing-box" | head -n 1)
+          SUB_LN_PATH=$(find "$GITHUB_WORKSPACE" -maxdepth 4 -name "go.mod" | grep "libneko" | head -n 1)
           
-          # 建立真实的、硬核物理隔离的上游父级文件夹
-          mkdir -p "$GITHUB_WORKSPACE/../sing-box" "$GITHUB_WORKSPACE/../libneko"
+          # 💡【真·降维打击】建立全局独立的 Go Workspace
+          cd "$GITHUB_WORKSPACE"
+          go work init
           
-          # 直接进行全量源码级别的强制同步覆盖
-          if [ ! -z "$FIND_SUB_SB" ]; then cp -r "$(dirname "$FIND_SUB_SB")"/. "$GITHUB_WORKSPACE/../sing-box/"; fi
-          if [ ! -z "$FIND_SUB_LN" ]; then cp -r "$(dirname "$FIND_SUB_LN")"/. "$GITHUB_WORKSPACE/../libneko/"; fi
+          # 强制将这三个核心的绝对路径直接纳入 Workspace，彻底废除 go.mod 相对引用
+          go work use "$GO_CORE_DIR"
+          if [ ! -z "$SUB_SB_PATH" ]; then go work use "$(dirname "$SUB_SB_PATH")"; fi
+          if [ ! -z "$SUB_LN_PATH" ]; then go work use "$(dirname "$SUB_LN_PATH")"; fi
           
+          # 针对 libcore 的空壳 go.mod 动态修补包名声明
           cd "$GO_CORE_DIR"
-          
-          # 自动补全可能缺失的动态声明骨架
           if ! grep -q "module " go.mod; then
             sed -i '1s/^/module libcore\n\n/' go.mod
           fi
           
+          # 强制剔除 go.mod 中老旧冲突的 replace 语句，完全移交全局工作区托管
+          sed -i '/replace/d' go.mod || true
+          
+          echo "⚙️ 启动 Go Workspace 饱和式依赖检索..."
           go mod tidy || true
+          
+          # 唤醒专属 gomobile 物理强搓 AAR 内核
           $HOME/go/bin/gomobile init || gomobile init
           $HOME/go/bin/gomobile bind -v -androidapi 21 -target android -o libcore.aar . || true
           
+          # 物理强插：把产物推入安卓大本营依赖槽
           mkdir -p "$GITHUB_WORKSPACE/app/libs"
           cp -f libcore.aar "$GITHUB_WORKSPACE/app/libs/" 2>/dev/null || true
           cp -f *.jar "$GITHUB_WORKSPACE/app/libs/" 2>/dev/null || true
@@ -237,7 +243,7 @@ jobs:
             cd "$GITHUB_WORKSPACE"
             echo "go.dir=$(which go | sed 's/\/bin\/go//')" >> local.properties
             chmod +x gradlew
-            echo "🚀 物理依赖槽已完全灌满，拉起原厂变体打包主进程..."
+            echo "🚀 全局工作区依赖已灌满，拉起原厂变体打包主进程..."
             ./gradlew :app:assembleFdroidRelease --stacktrace
             ;;
             
