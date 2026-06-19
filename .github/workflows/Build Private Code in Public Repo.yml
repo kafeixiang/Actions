@@ -11,7 +11,7 @@ on:
         options:
           - 'kafeixiang/husi [dev-3]'
           - 'kafeixiang/husi [main]'
-          - 'kafeixiang/husi [master]'
+          - 'kafeixiang/master [master]'
           - 'kafeixiang/Exclave [dev]'
           - 'kafeixiang/Exclave [main]'
           - 'kafeixiang/ClashMetaForAndroid [main]'
@@ -161,7 +161,7 @@ jobs:
         echo "$HOME/go/bin" >> $GITHUB_PATH
 
     # =================================================================
-    # 核心步骤隔离：利用软链接物理桥接依赖，实现真闭环 AOT 生成
+    # 核心步骤隔离：强行物理平铺源码依赖，阻断相对路径无法识别的大坑
     # =================================================================
     - name: Hardcore Force Bind Kernel AAR
       if: env.PROJECT_NAME == 'NekoBoxForAndroid'
@@ -174,19 +174,19 @@ jobs:
         GO_CORE_PATH=$(find . -name "go.mod" -not -path "*/build/*" -not -path "*/gm-build-bin/*" | head -n 1)
         if [ ! -z "$GO_CORE_PATH" ]; then
           GO_CORE_DIR=$(dirname "$GO_CORE_PATH")
-          echo "🎯 进驻底层 Go 源码目录：$GO_CORE_DIR"
+          echo "🎯 进驻底层 Go 源码工程：$GO_CORE_DIR"
           
-          # 💡 【核心修复】保留原生完整的 replace 映射！
-          # 自动在 $GO_CORE_DIR 的同级及外层空间为子模块中克隆完毕的 sing-box、libneko 建立软链接别名
-          # 这样 go mod tidy 在寻找 ../../sing-box 时，能无缝指向我们本地物理源码
-          mkdir -p ../sing-box ../libneko 2>/dev/null || true
-          
-          # 智能在工程父目录建立链接桥梁
+          # 💡 【物理覆写：彻底斩断断链盲区】
+          # 用 find 去精准捕捉递归拉下来的 sing-box 和 libneko
           FIND_SUB_SB=$(find "$GITHUB_WORKSPACE" -maxdepth 4 -name "go.mod" | grep "sing-box" | head -n 1 || echo "")
           FIND_SUB_LN=$(find "$GITHUB_WORKSPACE" -maxdepth 4 -name "go.mod" | grep "libneko" | head -n 1 || echo "")
           
-          if [ ! -z "$FIND_SUB_SB" ]; then ln -sfn "$(dirname "$FIND_SUB_SB")" "$GITHUB_WORKSPACE/../sing-box"; fi
-          if [ ! -z "$FIND_SUB_LN" ]; then ln -sfn "$(dirname "$FIND_SUB_LN")" "$GITHUB_WORKSPACE/../libneko"; fi
+          # 建立真实的、硬核物理隔离的上游父级文件夹
+          mkdir -p "$GITHUB_WORKSPACE/../sing-box" "$GITHUB_WORKSPACE/../libneko"
+          
+          # 直接进行全量源码级别的强制同步覆盖
+          if [ ! -z "$FIND_SUB_SB" ]; then cp -r "$(dirname "$FIND_SUB_SB")"/. "$GITHUB_WORKSPACE/../sing-box/"; fi
+          if [ ! -z "$FIND_SUB_LN" ]; then cp -r "$(dirname "$FIND_SUB_LN")"/. "$GITHUB_WORKSPACE/../libneko/"; fi
           
           cd "$GO_CORE_DIR"
           
@@ -202,6 +202,7 @@ jobs:
           mkdir -p "$GITHUB_WORKSPACE/app/libs"
           cp -f libcore.aar "$GITHUB_WORKSPACE/app/libs/" 2>/dev/null || true
           cp -f *.jar "$GITHUB_WORKSPACE/app/libs/" 2>/dev/null || true
+          cd "$GITHUB_WORKSPACE"
         fi
 
     # =================================================================
@@ -236,7 +237,7 @@ jobs:
             cd "$GITHUB_WORKSPACE"
             echo "go.dir=$(which go | sed 's/\/bin\/go//')" >> local.properties
             chmod +x gradlew
-            echo "🚀 物理依赖槽已安全闭合，拉起原厂变体打包主进程..."
+            echo "🚀 物理依赖槽已完全灌满，拉起原厂变体打包主进程..."
             ./gradlew :app:assembleFdroidRelease --stacktrace
             ;;
             
