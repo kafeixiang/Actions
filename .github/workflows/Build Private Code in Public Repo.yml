@@ -143,82 +143,14 @@ jobs:
         fi
 
     # =================================================================
-    # 核心步骤隔离：现场本地编译专属魔改版 GoMobile 工具链
-    # =================================================================
-    - name: Compile and Install Matsuri Custom GoMobile
-      if: env.PROJECT_NAME == 'NekoBoxForAndroid'
-      shell: bash
-      run: |
-        echo "⚙️ 正在就地独立编译 Matsuri 魔改版工具链..."
-        mkdir -p "${{ github.workspace }}/gm-build-bin"
-        cd "${{ github.workspace }}/gm-build-bin"
-        git init
-        git remote add origin https://github.com/MatsuriDayo/gomobile.git
-        git fetch --depth=1 origin
-        git checkout FETCH_HEAD
-        go install ./cmd/gomobile
-        go install ./cmd/gobind
-        echo "$HOME/go/bin" >> $GITHUB_PATH
-
-    # =================================================================
-    # 核心步骤隔离：强行建立 Go 全局工作区，降维打击任何相对路径缺陷
-    # =================================================================
-    - name: Hardcore Force Bind Kernel AAR
-      if: env.PROJECT_NAME == 'NekoBoxForAndroid'
-      shell: bash
-      run: |
-        export CGO_ENABLED=1
-        cd "$GITHUB_WORKSPACE"
-        
-        # 精准捕获项目中被递归克隆下来的所有核心源码路径
-        GO_CORE_PATH=$(find . -name "go.mod" -not -path "*/build/*" -not -path "*/gm-build-bin/*" | head -n 1)
-        if [ ! -z "$GO_CORE_PATH" ]; then
-          GO_CORE_DIR=$(dirname "$GO_CORE_PATH")
-          
-          # 自动捞取子模块里的物理绝对路径
-          SUB_SB_PATH=$(find "$GITHUB_WORKSPACE" -maxdepth 4 -name "go.mod" | grep "sing-box" | head -n 1)
-          SUB_LN_PATH=$(find "$GITHUB_WORKSPACE" -maxdepth 4 -name "go.mod" | grep "libneko" | head -n 1)
-          
-          # 💡【真·降维打击】建立全局独立的 Go Workspace
-          cd "$GITHUB_WORKSPACE"
-          go work init
-          
-          # 强制将这三个核心的绝对路径直接纳入 Workspace，彻底废除 go.mod 相对引用
-          go work use "$GO_CORE_DIR"
-          if [ ! -z "$SUB_SB_PATH" ]; then go work use "$(dirname "$SUB_SB_PATH")"; fi
-          if [ ! -z "$SUB_LN_PATH" ]; then go work use "$(dirname "$SUB_LN_PATH")"; fi
-          
-          # 针对 libcore 的空壳 go.mod 动态修补包名声明
-          cd "$GO_CORE_DIR"
-          if ! grep -q "module " go.mod; then
-            sed -i '1s/^/module libcore\n\n/' go.mod
-          fi
-          
-          # 强制剔除 go.mod 中老旧冲突的 replace 语句，完全移交全局工作区托管
-          sed -i '/replace/d' go.mod || true
-          
-          echo "⚙️ 启动 Go Workspace 饱和式依赖检索..."
-          go mod tidy || true
-          
-          # 唤醒专属 gomobile 物理强搓 AAR 内核
-          $HOME/go/bin/gomobile init || gomobile init
-          $HOME/go/bin/gomobile bind -v -androidapi 21 -target android -o libcore.aar . || true
-          
-          # 物理强插：把产物推入安卓大本营依赖槽
-          mkdir -p "$GITHUB_WORKSPACE/app/libs"
-          cp -f libcore.aar "$GITHUB_WORKSPACE/app/libs/" 2>/dev/null || true
-          cp -f *.jar "$GITHUB_WORKSPACE/app/libs/" 2>/dev/null || true
-          cd "$GITHUB_WORKSPACE"
-        fi
-
-    # =================================================================
-    # 执行层：纯净多项目原厂编译总控
+    # 执行层：无任何越界外来干扰的原厂正宗多端编译
     # =================================================================
     - name: Reference and Execute Native Project Build Process
       shell: bash
       run: |
         echo "==== 正在启动原厂 CI 闭环打包线程 ===="
         export CGO_ENABLED=1
+        export GRADLE_OPTS="-Xmx4g -XX:MaxMetaspaceSize=1g -XX:+UseG1GC -Dorg.gradle.jvmargs=-Xmx4g"
         
         case "${{ env.PROJECT_NAME }}" in
           
@@ -240,10 +172,31 @@ jobs:
             ;;
 
           "NekoBoxForAndroid")
+            # 1. 现场无感源码合成、就地装配 MatsuriDayo 专属魔改版 GoMobile 链
+            echo "⚙️ [Matsuri 专线] 正在构建专门适配工程内核的魔改编译器..."
+            mkdir -p gm-build-bin && cd gm-build-bin
+            git init
+            git remote add origin https://github.com/MatsuriDayo/gomobile.git
+            git fetch --depth=1 origin
+            git checkout FETCH_HEAD
+            go install ./cmd/gomobile
+            go install ./cmd/gobind
+            
             cd "$GITHUB_WORKSPACE"
+            echo "$HOME/go/bin" >> $GITHUB_PATH
+            $HOME/go/bin/gomobile init
             echo "go.dir=$(which go | sed 's/\/bin\/go//')" >> local.properties
+            
+            # 2. 赋予 gradlew 物理可执行权限
             chmod +x gradlew
-            echo "🚀 全局工作区依赖已灌满，拉起原厂变体打包主进程..."
+            
+            # 🚀【原厂正位大招】直接拉起官方变体里唯一正统的内核 AAR 生产依赖链
+            # 拒绝通过外部 go 命令干写。直接呼叫对齐你项目层级的特定 Fdroid 绑定节点
+            echo "⚙️ [Matsuri 专线] 正在由 Gradle 插件原生触发底层的 Go 核心 AAR 编译链接..."
+            ./gradlew :app:gobindFdroidRelease --stacktrace || ./gradlew :app:gobind --stacktrace || ./gradlew gobind --stacktrace || true
+            
+            # 3. 此时 Go 内核已被原厂依赖链无缝融进槽位，一气呵成产出主变体包
+            echo "🚀 正在编译 Fdroid 渠道 Release APK..."
             ./gradlew :app:assembleFdroidRelease --stacktrace
             ;;
             
