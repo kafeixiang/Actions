@@ -63,7 +63,7 @@ jobs:
 
           - name: "Exclave"
             fork: "kafeixiang/Exclave"
-            upstream: "https://github.com/dyhkwong/Exclave.git" 
+            upstream: "https://github.com/dyhkwong/Exclave.git"
             mappings: "dev:dev-2"
 
           - name: "husi"
@@ -78,12 +78,12 @@ jobs:
 
           - name: "Exclave2"
             fork: "kafeixiang/Exclave2"
-            upstream: "https://github.com/dyhkwong/Exclave.git" 
+            upstream: "https://github.com/dyhkwong/Exclave.git"
             mappings: "dev:dev-2"
     
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-            
+
     steps:
       # 第一步：拉取你的 Fork 仓库
       - name: Checkout Fork
@@ -105,24 +105,25 @@ jobs:
           # 2. 添加上游仓库
           git remote add upstream ${{ matrix.upstream }}
           
+          # ⭐ 优化：将 Fetch 操作移出循环。一次性拉取所有远程分支，大幅减少网络 I/O 耗时
+          echo ">>>> 正在获取远程仓库最新状态..."
+          git fetch upstream --quiet
+          git fetch origin --quiet || true
+          
           # 3. 循环处理映射
           for pair in ${{ matrix.mappings }}; do
             UP_BR=${pair%%:*}       # 获取冒号前的部分：上游分支名
             RAW_LOCAL_BR=${pair#*:} # 获取冒号后的部分：原始本地分支名
-            
+          
             if [[ "$RAW_LOCAL_BR" == *! ]]; then
               METHOD="reset"; LOCAL_BR=${RAW_LOCAL_BR%!}
             else
               METHOD="rebase"; LOCAL_BR=$RAW_LOCAL_BR
             fi
-            
+          
             echo ">>>> [${{ matrix.name }}] 处理分支同步: $UP_BR -> $LOCAL_BR (模式: $METHOD)"
-            
-            # 4. 获取最新代码
-            git fetch upstream $UP_BR --quiet
-            git fetch origin $LOCAL_BR --quiet || true
-            
-            # 5. 确保切换到正确的本地分支
+          
+            # 4. 确保切换到正确的本地分支
             if git rev-parse --verify origin/$LOCAL_BR >/dev/null 2>&1; then
               git checkout -B $LOCAL_BR origin/$LOCAL_BR
             else
@@ -139,7 +140,7 @@ jobs:
               if git rebase upstream/$UP_BR; then
                 git push origin $LOCAL_BR --force
                 echo ">>>> [成功] $LOCAL_BR 变基同步完成"
-                
+          
                 # 同步成功后，自动关闭并删除该分支之前的冲突 PR
                 gh pr list --repo "${{ matrix.fork }}" --base "$LOCAL_BR" --state open --json number,title | jq -c '.[]' | while read -r pr; do
                   if [[ $(echo "$pr" | jq -r '.title') == *"冲突提醒"* ]]; then
@@ -150,27 +151,29 @@ jobs:
                 done
               else
                 echo ">>>> [冲突] $LOCAL_BR 变基失败，正在判断冲突类型..."
-                
-                # ⭐ 关键修复：在 rebase --abort 之前获取本地提交列表
-                COMMITS=$(git rev-list origin/$LOCAL_BR ^upstream/$UP_BR)
+          
+                # ⭐ 关键修复：必须加上 --reverse 参数！
+                # 确保提取出的本地提交按【从旧到新】的时间正序排列，否则 cherry-pick 必定直接冲突挂掉
+                COMMITS=$(git rev-list --reverse origin/$LOCAL_BR ^upstream/$UP_BR)
                 git rebase --abort
 
                 # ==== breaking change 自动修复 BEGIN ====
                 AUTO_FIX_BRANCH="auto-fix-$LOCAL_BR-$(date +%s)"
                 git checkout -b $AUTO_FIX_BRANCH upstream/$UP_BR
                 AUTO_FIX_PASS="true"
-                
+          
                 for commit in $COMMITS; do
+                  echo ">>>> [自动修复] 正在尝试重放本地提交: $commit"
                   if ! git cherry-pick $commit; then
+                    echo ">>>> [自动修复失败] 提交 $commit 存在物理代码冲突，无法自动合并"
                     AUTO_FIX_PASS="false"
                     git cherry-pick --abort
                     break
                   fi
                 done
 
-                # ⭐ 修复：用 if-else 代替 continue，避免嵌套循环问题
                 if [ "$AUTO_FIX_PASS" == "true" ]; then
-                  echo ">>>> [自动修复] breaking change 导致的 rebase 冲突已自动修复"
+                  echo ">>>> [自动修复] 上游历史变动或轻微 Breaking Change 导致的冲突已通过正序重放完美解决"
                   git push origin $AUTO_FIX_BRANCH --force
                   git checkout $LOCAL_BR
                   git reset --hard $AUTO_FIX_BRANCH
@@ -180,8 +183,8 @@ jobs:
                 else
                   # ========== 自动修复失败，走原有冲突提醒 PR 处理 ==========
                   git checkout $LOCAL_BR
-                  # ==== breaking change 自动修复 END ====
-                  
+                  git branch -D $AUTO_FIX_BRANCH || true # 优化：顺手清理本地不再使用的临时自动修复分支
+          
                   gh pr list --repo "${{ matrix.fork }}" --base "$LOCAL_BR" --state open --json number,title | jq -c '.[]' | while read -r pr; do
                     if [[ $(echo "$pr" | jq -r '.title') == *"冲突提醒"* ]]; then
                       PR_NUM=$(echo "$pr" | jq -r '.number')
@@ -192,10 +195,9 @@ jobs:
                   TEMP_BR="sync-alert-${LOCAL_BR}-$(date +%s)"
                   git checkout -b $TEMP_BR upstream/$UP_BR
                   git push origin $TEMP_BR
-                  
-                  # ⭐ 修复：使用 $'...' 格式实现正确的换行
+          
                   BODY=$'自动化脚本发现上游 '"$UP_BR"$' 分支与本地 '"$LOCAL_BR"$' 分支存在冲突。\n\n**处理建议：**\n1. 在本地切换到 '"$LOCAL_BR"$' 分支。\n2. 执行 git pull upstream '"$UP_BR"$' --rebase\n3. 解决冲突后推送到 origin。\n4. 下次同步成功时，此 PR 会自动关闭并删除临时分支。'
-                  
+          
                   gh pr create \
                     --repo "${{ matrix.fork }}" \
                     --base "$LOCAL_BR" \
