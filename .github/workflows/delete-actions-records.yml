@@ -1,0 +1,317 @@
+name: Delete Actions Records, Releases and Tags
+
+on:
+  schedule:
+    # 每5天执行一次（UTC时间）
+    - cron: '0 0 */5 * *'
+  
+  # 允许手动触发
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: write
+
+jobs:
+  delete-actions-releases-tags:
+    runs-on: ubuntu-latest
+    
+    strategy:
+      matrix:
+        repo:
+          - NekoBoxForAndroid
+          - Exclave
+          - sing-box
+          - v2rayNG
+          - v2rayN
+          - FlClash
+          - ClashMetaForAndroid
+          - mihomo
+          - Xray
+          - husi
+          - chromego_merge
+          - jid
+  #        - 1
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Delete all workflow runs for kafeixiang/${{ matrix.repo }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
+          OWNER: kafeixiang
+          REPO: ${{ matrix.repo }}
+        run: |
+          #!/bin/bash
+          set +e
+          
+          echo "=========================================="
+          echo "开始删除工作流运行记录"
+          echo "仓库: $OWNER/$REPO"
+          echo "=========================================="
+          
+          total_deleted=0
+          max_iterations=1000  # 防止无限循环的保护
+          iteration=0
+          
+          while [ $iteration -lt $max_iterations ]; do
+            iteration=$((iteration + 1))
+            echo ""
+            echo "迭代 $iteration: 获取工作流运行列表..."
+            
+            # 始终获取第一页，因为删除后新的记录会向上补位
+            response=$(curl -s \
+              -H "Authorization: token $GITHUB_TOKEN" \
+              -H "Accept: application/vnd.github.v3+json" \
+              "https://api.github.com/repos/$OWNER/$REPO/actions/runs?per_page=100&page=1")
+            
+            # 检查响应是否有效
+            if ! echo "$response" | jq empty 2>/dev/null; then
+              echo "API 响应异常，结束删除"
+              break
+            fi
+            
+            # 提取运行ID
+            run_ids=$(echo "$response" | jq -r '.workflow_runs[]?.id' 2>/dev/null | grep -v '^$')
+            
+            if [ -z "$run_ids" ]; then
+              echo "✓ 没有更多的工作流运行，删除完成！"
+              break
+            fi
+            
+            # 统计本轮的运行数
+            run_count=$(echo "$run_ids" | wc -l)
+            echo "本轮找到 $run_count 个工作流运行"
+            
+            # 删除每个运行
+            batch_deleted=0
+            echo "$run_ids" | while read run_id; do
+              if [ ! -z "$run_id" ] && [ "$run_id" != "null" ]; then
+                echo -n "  正在删除运行ID: $run_id ... "
+                
+                delete_response=$(curl -s -w "\n%{http_code}" \
+                  -X DELETE \
+                  -H "Authorization: token $GITHUB_TOKEN" \
+                  -H "Accept: application/vnd.github.v3+json" \
+                  "https://api.github.com/repos/$OWNER/$REPO/actions/runs/$run_id")
+                
+                http_code=$(echo "$delete_response" | tail -n1)
+                
+                if [ "$http_code" = "204" ]; then
+                  echo "✓ 成功"
+                  batch_deleted=$((batch_deleted + 1))
+                elif [ "$http_code" = "404" ]; then
+                  echo "✗ 未找到"
+                else
+                  echo "✗ 失败 (HTTP $http_code)"
+                fi
+                
+                # 延迟，避免API速率限制
+                sleep 0.5
+              fi
+            done
+            
+            total_deleted=$((total_deleted + batch_deleted))
+            echo "本轮删除了 $batch_deleted 个运行，总计已删除 $total_deleted 个"
+            
+            # 两轮之间加延迟
+            sleep 1
+          done
+          
+          echo ""
+          echo "=========================================="
+          echo "工作流运行删除完成: kafeixiang/$REPO"
+          echo "总共删除了 $total_deleted 个工作流运行"
+          echo "=========================================="
+      
+      - name: Delete all releases for kafeixiang/${{ matrix.repo }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
+          OWNER: kafeixiang
+          REPO: ${{ matrix.repo }}
+        run: |
+          #!/bin/bash
+          set +e
+          
+          echo ""
+          echo "=========================================="
+          echo "开始删除发布版本（Releases）"
+          echo "仓库: $OWNER/$REPO"
+          echo "=========================================="
+          
+          total_releases_deleted=0
+          max_iterations=1000  # 防止无限循环的保护
+          iteration=0
+          
+          while [ $iteration -lt $max_iterations ]; do
+            iteration=$((iteration + 1))
+            echo ""
+            echo "迭代 $iteration: 获取发布版本列表..."
+            
+            # 始终获取第一页
+            response=$(curl -s \
+              -H "Authorization: token $GITHUB_TOKEN" \
+              -H "Accept: application/vnd.github.v3+json" \
+              "https://api.github.com/repos/$OWNER/$REPO/releases?per_page=100&page=1")
+            
+            # 检查响应是否有效
+            if ! echo "$response" | jq empty 2>/dev/null; then
+              echo "API 响应异常，结束删除"
+              break
+            fi
+            
+            # 提取发布ID
+            release_ids=$(echo "$response" | jq -r '.[]?.id' 2>/dev/null | grep -v '^$')
+            
+            if [ -z "$release_ids" ]; then
+              echo "✓ 没有更多的发布版本，删除完成！"
+              break
+            fi
+            
+            # 统计本轮的版本数
+            release_count=$(echo "$release_ids" | wc -l)
+            echo "本轮找到 $release_count 个发布版本"
+            
+            # 删除每个发布版本
+            batch_deleted=0
+            echo "$release_ids" | while read release_id; do
+              if [ ! -z "$release_id" ] && [ "$release_id" != "null" ]; then
+                echo -n "  正在删除发布版本ID: $release_id ... "
+                
+                delete_response=$(curl -s -w "\n%{http_code}" \
+                  -X DELETE \
+                  -H "Authorization: token $GITHUB_TOKEN" \
+                  -H "Accept: application/vnd.github.v3+json" \
+                  "https://api.github.com/repos/$OWNER/$REPO/releases/$release_id")
+                
+                http_code=$(echo "$delete_response" | tail -n1)
+                
+                if [ "$http_code" = "204" ]; then
+                  echo "✓ 成功"
+                  batch_deleted=$((batch_deleted + 1))
+                elif [ "$http_code" = "404" ]; then
+                  echo "✗ 未找到"
+                else
+                  echo "✗ 失败 (HTTP $http_code)"
+                fi
+                
+                # 延迟，避免API速率限制
+                sleep 0.5
+              fi
+            done
+            
+            total_releases_deleted=$((total_releases_deleted + batch_deleted))
+            echo "本轮删除了 $batch_deleted 个版本，总计已删除 $total_releases_deleted 个"
+            
+            # 两轮之间加延迟
+            sleep 1
+          done
+          
+          echo ""
+          echo "=========================================="
+          echo "发布版本删除完成: kafeixiang/$REPO"
+          echo "总共删除了 $total_releases_deleted 个发布版本"
+          echo "=========================================="
+      
+      - name: Delete all tags for kafeixiang/${{ matrix.repo }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
+          OWNER: kafeixiang
+          REPO: ${{ matrix.repo }}
+        run: |
+          #!/bin/bash
+          set +e
+          
+          echo ""
+          echo "=========================================="
+          echo "开始删除标签（Tags）"
+          echo "仓库: $OWNER/$REPO"
+          echo "=========================================="
+          
+          total_tags_deleted=0
+          max_iterations=1000  # 防止无限循环的保护
+          iteration=0
+          
+          while [ $iteration -lt $max_iterations ]; do
+            iteration=$((iteration + 1))
+            echo ""
+            echo "迭代 $iteration: 获取标签列表..."
+            
+            # 始终获取第一页，因为删除后新的记录会向上补位
+            response=$(curl -s \
+              -H "Authorization: token $GITHUB_TOKEN" \
+              -H "Accept: application/vnd.github.v3+json" \
+              "https://api.github.com/repos/$OWNER/$REPO/tags?per_page=100&page=1")
+            
+            # 检查响应是否有效
+            if ! echo "$response" | jq empty 2>/dev/null; then
+              echo "API 响应异常，结束删除"
+              break
+            fi
+            
+            # 提取标签名称
+            tag_names=$(echo "$response" | jq -r '.[]?.name' 2>/dev/null | grep -v '^$')
+            
+            if [ -z "$tag_names" ]; then
+              echo "✓ 没有更多的标签，删除完成！"
+              break
+            fi
+            
+            # 统计本轮的标签数
+            tag_count=$(echo "$tag_names" | wc -l)
+            echo "本轮找到 $tag_count 个标签"
+            
+            # 删除每个标签
+            batch_deleted=0
+            echo "$tag_names" | while read tag_name; do
+              if [ ! -z "$tag_name" ] && [ "$tag_name" != "null" ]; then
+                echo -n "  正在删除标签: $tag_name ... "
+                
+                # URL编码标签名称（处理特殊字符）
+                encoded_tag=$(echo -n "$tag_name" | jq -sRr @uri)
+                
+                # 标签通过 refs/tags/TAG_NAME 方式删除
+                delete_response=$(curl -s -w "\n%{http_code}" \
+                  -X DELETE \
+                  -H "Authorization: token $GITHUB_TOKEN" \
+                  -H "Accept: application/vnd.github.v3+json" \
+                  "https://api.github.com/repos/$OWNER/$REPO/git/refs/tags/$encoded_tag")
+                
+                http_code=$(echo "$delete_response" | tail -n1)
+                
+                if [ "$http_code" = "204" ]; then
+                  echo "✓ 成功"
+                  batch_deleted=$((batch_deleted + 1))
+                elif [ "$http_code" = "404" ]; then
+                  echo "✗ 未找到"
+                else
+                  echo "✗ 失败 (HTTP $http_code)"
+                fi
+                
+                # 延迟，避免API速率限制
+                sleep 0.5
+              fi
+            done
+            
+            total_tags_deleted=$((total_tags_deleted + batch_deleted))
+            echo "本轮删除了 $batch_deleted 个标签，总计已删除 $total_tags_deleted 个"
+            
+            # 两轮之间加延迟
+            sleep 1
+          done
+          
+          echo ""
+          echo "=========================================="
+          echo "标签删除完成: kafeixiang/$REPO"
+          echo "总共删除了 $total_tags_deleted 个标签"
+          echo "=========================================="
+      
+      - name: Summary
+        if: always()
+        run: |
+          echo ""
+          echo "✓ 仓库 ${{ matrix.repo }} 的所有操作完成！"
+          echo "  - 工作流运行已删除"
+          echo "  - 发布版本已删除"
+          echo "  - 标签已删除"
