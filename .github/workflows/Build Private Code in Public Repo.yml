@@ -3,7 +3,6 @@ name: Build Private Code in Public Repo (Dynamic Workflow Engine)
 on:
   workflow_dispatch:
     inputs:
-      # 1. 精简后的 10 个软件工程项目
       repo:
         description: '🚀 选择【目标私有项目】'
         required: true
@@ -21,7 +20,6 @@ on:
           - 'kafeixiang/mihomo'
           - 'kafeixiang/Xray'
 
-      # ⭐ 优化：默认常用分支已完美对齐为 'dev'
       branch_preset:
         description: '🌿 选择【常用分支】(若选最后一项，则在下方手动输入)'
         required: true
@@ -36,7 +34,6 @@ on:
           - 'Alpha'
           - 'CUSTOM_INPUT_BOX'
 
-      # 3. 自由文本框兜底，兼容任意未知临时分支
       custom_branch:
         description: '✍️ 手动输入【自定义分支】(仅在上方选择 CUSTOM_INPUT_BOX 时生效)'
         required: false
@@ -364,6 +361,7 @@ jobs:
               return mapping.get(key, match.group(0))
           
           content = re.sub(pat, repl, content)
+          content = re.sub(r"\$\{\{\s*.*?\s*\}\}", "", content)
           
           with open("extracted_steps.txt", "w") as f:
               f.write(content)
@@ -408,21 +406,27 @@ jobs:
         run: |
           .\dynamic_run.ps1
 
-      # 13. 智能指纹清洗与绝对扁平化收集箱
-      - name: Flatten and Clean Output Binaries via Smart Python Filter
+      # ⭐ 13. 顶级智能脱壳（魔改核心）：全面对齐 [项目名]-[版本].[格式] 复合模糊指纹算法，完美打通 .aar 搜刮通道
+      - name: Flatten and Clean Output Binaries via Fuzzy Python Filter
         shell: python
         run: |
           import os
           import shutil
+          import re
 
           project_name = os.environ.get("PROJECT_NAME", "").lower()
+          # 🟢 剔除名字中的无用环境修饰符（如 forandroid, _merge），提纯最原始的项目字根
+          root_word = project_name.replace("forandroid", "").replace("for_android", "").replace("-android", "").replace("desktop", "").replace("_merge", "")
+          root_word_clean = re.sub(r'[-_\s]', '', root_word)
+          
           target_dir = "unified_dist"
           os.makedirs(target_dir, exist_ok=True)
 
+          # 🟢 全面合流：.aar 已正式被拔高为与 .apk 同级别的战略发布级提取格式
           allowed_exts = (".apk", ".aab", ".dmg", ".zip", ".tar.gz", ".aar", ".exe")
           ignored_dirs = [".git", ".gradle", "gradle-wrapper", "node_modules", "intermediates", "build-cache", "cache", "tmp", "temp", "mock", "test", "tests", "obj"]
 
-          print(f">>>> 🔍 智能指纹过滤器已启动！正在深度对齐核心项目名: {project_name}")
+          print(f">>>> 🔍 纯净指纹除毒滤网已启动！核心匹配字根: [{root_word_clean}]")
 
           for root, dirs, files in os.walk("."):
               if any(ignored in root.replace("\\", "/").split("/") for ignored in ignored_dirs):
@@ -432,27 +436,30 @@ jobs:
           
               for file in files:
                   file_lower = file.lower()
-                  path_lower = root.lower()
-          
                   if not file_lower.endswith(allowed_exts):
                       continue
           
+                  # 文本归一化处理（抹除文件名中的中划线和下划线，阻断原厂拼写差异干扰）
+                  file_clean = re.sub(r'[-_\s]', '', file_lower)
                   is_match = False
           
-                  if project_name and project_name in file_lower:
+                  # 🎯 模糊机制 1：文件名清洗后，完美命中主人的项目特征码（如 husi*.apk, exclave*.aar）
+                  if root_word_clean in file_clean:
                       is_match = True
-                  elif any(k in file_lower for k in ["release", "unsigned", "installer", "setup", "publish", "uberjar"]):
+                  # 🎯 模糊机制 2：针对可能存在复合长文件名前缀变形（如 libexclavecore...），前瞻捕捉前 4 位前缀变体
+                  elif len(root_word_clean) >= 4 and root_word_clean[:4] in file_clean:
                       is_match = True
-                  elif any(k in path_lower for k in ["outputs/apk", "bin/release", "packages", "publish"]):
+                  # 🎯 机制 3：若文件名遭遇极端变形，直接对准原厂标准出货槽执行地毯式捞取
+                  elif any(k in file_clean for k in ["release", "unsigned", "installer", "uberjar"]) and any(k in root.lower() for k in ["outputs/apk", "bin/release", "packages", "libs"]):
                       is_match = True
           
                   if is_match:
                       src_path = os.path.join(root, file)
                       dest_path = os.path.join(target_dir, file)
-                      print(f"-> [命中纯净产物] 成功剥离套娃: {src_path} => 写入 => {dest_path}")
+                      print(f"-> [💥 模糊指纹命中] 成功抽取纯净二进制产物: {src_path} => 归档 => {dest_path}")
                       shutil.copy2(src_path, dest_path)
 
-      # 14. 联动发布（打通 Release 页面）
+      # 14. 联动发布（强制定向当前公开仓库的 Release 页面，彻底打破 403 权限死锁）
       - name: Push and Publish to Public Repo Release Page
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -461,15 +468,16 @@ jobs:
           if [ -d "unified_dist" ] && [ "$(ls -A unified_dist 2>/dev/null)" ]; then
             CLEAN_BRANCH=$(echo "${{ env.TARGET_BRANCH }}" | tr '/' '-')
             TAG_NAME="${{ env.PROJECT_NAME }}-${CLEAN_BRANCH}-v${{ github.run_number }}"
-            echo ">>>> 🚀 正在向公开仓库 Release 页面上架独立节点: $TAG_NAME"
+            echo ">>>> 🚀 正在向当前公开库上架精纯 Release 产物: $TAG_NAME"
           
-            gh release create "$TAG_NAME" unified_dist/* --title "$TAG_NAME" --notes "Automated smart leak build from private upstream: ${{ env.TARGET_REPO }} [${{ env.TARGET_BRANCH }}]" --prerelease
-            echo ">>>> 🎉 恭喜主人！全线发布成功！请直接刷新当前公开仓库的 Release 标签页查看下载！"
+            # 使用显式注入的 --repo 约束指令，确保 100% 写入公开仓库自身，拒绝越权报错
+            gh release create "$TAG_NAME" unified_dist/* --repo "${{ github.repository }}" --title "$TAG_NAME" --notes "Automated smart build from private upstream: ${{ env.TARGET_REPO }} [${{ env.TARGET_BRANCH }}]" --prerelease
+            echo ">>>> 🎉 史诗级通关！发布大功告成！直接刷新你的免费公开仓库 Release 栏即可！"
           else
             echo "⚠️ 未扫描到符合项目指纹的纯净编译产物，跳过 Release 发布。"
           fi
 
-      # 15. 备份层：Artifacts 扁平化归档
+      # 15. 备份层：Artifacts 平铺归档
       - name: Archive and Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
