@@ -74,7 +74,6 @@ on:
           - 'amd64'
           - 'arm'
 
-      # ⭐ 核心进化：新增 Release 上传开关，默认关闭（不上传）
       upload_to_release:
         description: '📦 是否同步上架到公开库的 Release 页面 (默认不上传)'
         required: true
@@ -110,7 +109,7 @@ jobs:
     runs-on: ${{ needs.setup_matrix.outputs.os_runner }}
 
     steps:
-      # 1. 智能合流：动态研判白名单预设与手打输入
+      # 1. 智能合流
       - name: Parse Selection
         id: parse
         shell: bash
@@ -136,7 +135,7 @@ jobs:
           echo "TARGET_BRANCH=$BRANCH" >> $GITHUB_ENV
           echo "PROJECT_NAME=$PROJECT_NAME" >> $GITHUB_ENV
 
-      # 2. 检出目标私有仓库到当前免费编译机
+      # 2. 检出目标私有仓库
       - name: Checkout Private Source
         uses: actions/checkout@v4
         with:
@@ -145,7 +144,7 @@ jobs:
           ref: ${{ env.TARGET_BRANCH }}
           fetch-depth: 0
 
-      # 3. 统一智能方法：融合硬编码地图与特征扫描，精准锁定唯一的编译剧本
+      # 3. 剧本锁定与环境参数抓取
       - name: Select Compilation Workflow and Extract Versions
         id: extract_env
         shell: bash
@@ -275,7 +274,7 @@ jobs:
             zig version
           fi
 
-      # 6. 根据原厂工作流动态配置 Java 环境
+      # 6. 配置 Java 环境
       - name: Set up Java Runtime
         if: env.PROJECT_NAME != 'v2rayN'
         uses: actions/setup-java@v4
@@ -283,7 +282,7 @@ jobs:
           java-version: ${{ env.DYNAMIC_JAVA }}
           distribution: 'temurin'
 
-      # 7. 根据原厂工作流动态配置 Go 环境
+      # 7. 配置 Go 环境
       - name: Set up Go Runtime
         if: env.PROJECT_NAME == 'Exclave' || env.PROJECT_NAME == 'NekoBoxForAndroid' || env.PROJECT_NAME == 'husi' || env.PROJECT_NAME == 'ClashMetaForAndroid' || env.PROJECT_NAME == 'FlClash'
         uses: actions/setup-go@v5
@@ -299,7 +298,7 @@ jobs:
         with:
           cache-read-only: false
 
-      # 9. 根据原厂打包工作流动态配置 .NET / Flutter 环境
+      # 9. 配置 .NET / Flutter 环境
       - name: Set up .NET SDK
         if: env.PROJECT_NAME == 'v2rayN'
         uses: actions/setup-dotnet@v4
@@ -389,7 +388,7 @@ jobs:
             echo ">>>> [Unix 翻译官] 原厂表达式在线翻译成功！"
           fi
 
-      # 12-A. Unix 跑道执行（Android、Go、Flutter、husi 多端交叉编译）
+      # 12-A. Unix 跑道执行
       - name: Execute Dynamic Build Process [Linux / macOS Runner]
         if: ${{ runner.os != 'Windows' }}
         shell: bash
@@ -413,7 +412,7 @@ jobs:
         run: |
           .\dynamic_run.ps1
 
-      # 13. 顶级智能脱壳：全面对齐项目特征，完美搜刮发布包与 .aar 底层内核
+      # 13. 智能指纹脱壳过滤器（提取最终纯净产物）
       - name: Flatten and Clean Output Binaries via Fuzzy Python Filter
         shell: python
         run: |
@@ -460,7 +459,7 @@ jobs:
                       print(f"-> [💥 模糊指纹命中] 成功抽取纯净产物: {src_path} => 归档 => {dest_path}")
                       shutil.copy2(src_path, dest_path)
 
-      # ⭐ 14. 联动发布（加入了 if 逻辑守卫：只有当你在顶部菜单勾选了上传时，本步骤才会执行）
+      # ⭐ 14. 联动发布（魔改加固版：全自动刺探已编译文件名，高保真抽离真实版本号注入 Tag 名）
       - name: Push and Publish to Public Repo Release Page
         if: ${{ github.event.inputs.upload_to_release == 'true' }}
         env:
@@ -469,8 +468,29 @@ jobs:
         run: |
           if [ -d "unified_dist" ] && [ "$(ls -A unified_dist 2>/dev/null)" ]; then
             CLEAN_BRANCH=$(echo "${{ env.TARGET_BRANCH }}" | tr '/' '-')
-            TAG_NAME="${{ env.PROJECT_NAME }}-${CLEAN_BRANCH}-v${{ github.run_number }}"
-            echo ">>>> 🚀 正在向当前公开库上架精纯 Release 产物: $TAG_NAME"
+          
+            # 🟢 终极进化：用 Python 刺探 unified_dist 里最纯正的 X.Y.Z[-修饰符] 安装包指纹，自动抹除末尾架构
+            VERSION=$(python3 -c '
+          import os, re
+          files = os.listdir("unified_dist")
+          version = ""
+          for f in files:
+              m = re.search(r"(\d+\.\d+\.\d+(?:-[a-z0-9.]+)?)" , f, re.IGNORECASE)
+              if m:
+                  v = m.group(1)
+                  v = re.sub(r"-(?:arm64|amd64|arm|x86|x86_64|v8a|v7a|unsigned|release|desktop|windows|macos|linux)$", "", v, flags=re.IGNORECASE)
+                  version = v
+                  break
+          print(version)
+          ')
+          
+            # 兜底机制：如果没抠出版本号，依然用 GitHub 构建序列号顶替
+            if [ -z "$VERSION" ]; then
+              VERSION="${{ github.run_number }}"
+            fi
+          
+            TAG_NAME="${{ env.PROJECT_NAME }}-${CLEAN_BRANCH}-v${VERSION}"
+            echo ">>>> 🚀 强制指向！已成功根据产物版本号生成精炼 Tag 名: $TAG_NAME"
           
             gh release create "$TAG_NAME" unified_dist/* --repo "${{ github.repository }}" --title "$TAG_NAME" --notes "Automated smart build from private upstream: ${{ env.TARGET_REPO }} [${{ env.TARGET_BRANCH }}]" --prerelease
             echo ">>>> 🎉 史诗级通关！发布大功告成！直接刷新你的免费公开仓库 Release 栏即可！"
@@ -478,7 +498,7 @@ jobs:
             echo "⚠️ 未扫描到符合项目指纹的纯净编译产物，跳过 Release 发布。"
           fi
 
-      # 15. 备份层：无论是否同步 Release，Artifacts 平铺归档永远正常生成供你随时下载
+      # 15. 备份层：Artifacts 平铺归档
       - name: Archive and Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
