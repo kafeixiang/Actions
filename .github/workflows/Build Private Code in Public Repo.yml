@@ -1,4 +1,4 @@
-name: Build Private Code in Public Repo
+name: Build Private Code in Public Repo (Dynamic Workflow Engine)
 
 on:
   workflow_dispatch:
@@ -13,7 +13,6 @@ on:
           - 'kafeixiang/husi [main]'
           - 'kafeixiang/master [master]'
           - 'kafeixiang/Exclave [dev]'
-          - 'kafeixiang/Exclave [main]'
           - 'kafeixiang/ClashMetaForAndroid [main]'
           - 'kafeixiang/ClashMetaForAndroid [dev]'
           - 'kafeixiang/v2rayNG [master]'
@@ -24,6 +23,54 @@ on:
           - 'kafeixiang/FlClash [dev]'
           - 'kafeixiang/v2rayN [master]'
           - 'kafeixiang/v2rayN [wpf]'
+          - 'kafeixiang/sing-box [main]'
+          - 'kafeixiang/sing-box [master]'
+          - 'kafeixiang/mihomo [main]'
+          - 'kafeixiang/mihomo [master]'
+          - 'kafeixiang/Xray [main]'
+          - 'kafeixiang/Xray [master]'
+          - 'kafeixiang/chromego_merge [main]'
+          - 'kafeixiang/chromego_merge [master]'
+          - 'kafeixiang/jid [main]'
+          - 'kafeixiang/jid [master]'
+
+      build_mode:
+        description: '🛠️ 选择【编译流剧本】(自适应匹配原厂发布模式)'
+        required: true
+        default: 'release'
+        type: choice
+        options:
+          - 'release'
+          - 'debug'
+          - 'nightly'
+          - 'mac'
+          - 'desktop'
+
+      target_platform:
+        description: '💻 目标系统 (仅对包含多平台矩阵的项目生效)'
+        required: true
+        default: 'android'
+        type: choice
+        options:
+          - 'android'
+          - 'macos'
+          - 'windows'
+          - 'linux'
+
+      target_arch:
+        description: '🏗️ 目标架构 (选择 all 将自动触发三个架构循环各编译一个)'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+          - 'all'
+          - 'arm64'
+          - 'amd64'
+          - 'arm'
+
+# ⭐ 核心修复 1：顶级权限过载！强行开启公开仓库的 Release 物理写入通道
+permissions:
+  contents: write
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
@@ -37,8 +84,11 @@ jobs:
       - id: set_os
         run: |
           RAW="${{ github.event.inputs.repo_and_branch }}"
+          MODE="${{ github.event.inputs.build_mode }}"
           if echo "$RAW" | grep -q "v2rayN"; then
             echo "os_runner=windows-latest" >> $GITHUB_OUTPUT
+          elif [ "$MODE" = "mac" ]; then
+            echo "os_runner=macos-latest" >> $GITHUB_OUTPUT
           else
             echo "os_runner=ubuntu-24.04" >> $GITHUB_OUTPUT
           fi
@@ -48,212 +98,368 @@ jobs:
     runs-on: ${{ needs.setup_matrix.outputs.os_runner }}
 
     steps:
-    # 1. 解析菜单选择
-    - name: Parse Selection
-      id: parse
-      shell: bash
-      run: |
-        RAW="${{ github.event.inputs.repo_and_branch }}"
-        REPO=$(echo "$RAW" | awk '{print $1}')
-        BRANCH=$(echo "$RAW" | grep -oP '\[\K[^\]]+')
-        PROJECT_NAME=$(echo "$REPO" | cut -d'/' -f2)
-        
-        echo "TARGET_REPO=$REPO" >> $GITHUB_ENV
-        echo "TARGET_BRANCH=$BRANCH" >> $GITHUB_ENV
-        echo "PROJECT_NAME=$PROJECT_NAME" >> $GITHUB_ENV
-
-    # 2. 检出目标私有仓库
-    - name: Checkout Private Source
-      uses: actions/checkout@v4
-      with:
-        repository: ${{ env.TARGET_REPO }}
-        token: ${{ secrets.PAT_TOKEN }}
-        ref: ${{ env.TARGET_BRANCH }}
-        fetch-depth: 1
-
-    # 3. 深度递归拉取所有端底层子模块
-    - name: Clone Submodules
-      shell: bash
-      run: |
-        git config --global url."https://${{ secrets.PAT_TOKEN }}@github.com/".insteadOf "https://github.com/"
-        git submodule update --init --recursive --depth=1
-
-    # 4. 配置 Java 环境
-    - name: Set up Java Runtime
-      if: env.PROJECT_NAME != 'v2rayN'
-      uses: actions/setup-java@v4
-      with:
-        java-version: 21
-        distribution: 'temurin'
-
-    # 5. 配置 Go 环境
-    - name: Set up Go Runtime
-      if: env.PROJECT_NAME == 'Exclave' || env.PROJECT_NAME == 'NekoBoxForAndroid' || env.PROJECT_NAME == 'husi' || env.PROJECT_NAME == 'ClashMetaForAndroid'
-      uses: actions/setup-go@v5
-      with:
-        go-version: 1.26.x
-        cache: true 
-        cache-dependency-path: "**/go.sum"
-
-    # 6. 挂载 Gradle 编译加速缓存
-    - name: Setup Gradle Cache for Fast Build
-      if: env.PROJECT_NAME != 'v2rayN' && env.PROJECT_NAME != 'FlClash'
-      uses: gradle/actions/setup-gradle@v3
-      with:
-        cache-read-only: false 
-
-    # 7. 配置 .NET / Flutter 环境
-    - name: Set up .NET SDK
-      if: env.PROJECT_NAME == 'v2rayN'
-      uses: actions/setup-dotnet@v4
-      with:
-        dotnet-version: '8.0.x'
-
-    - name: Set up Flutter
-      if: env.PROJECT_NAME == 'FlClash'
-      uses: subosito/flutter-action@v2
-      with:
-        channel: 'stable'
-        cache: true
-
-    # 8. 【husi dev-3 专项补丁】部署 Linux 编译 Apple Darwin 的必备底层依赖
-    - name: Inject Rigorous Linux-to-Mac Cross-Compilation Toolchain
-      if: env.PROJECT_NAME == 'husi'
-      shell: bash
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y clang llvm libxml2-dev uuid-dev patch libssl-dev make
-        echo "CC=clang" >> $GITHUB_ENV
-        echo "CXX=clang++" >> $GITHUB_ENV
-
-    # 9. 挂载本地 Android SDK/NDK 映射属性
-    - name: Prepare Local Properties
-      if: env.PROJECT_NAME != 'v2rayN'
-      shell: bash
-      run: |
-        echo "sdk.dir=$ANDROID_HOME" > local.properties
-        if [ "${{ env.PROJECT_NAME }}" = "ClashMetaForAndroid" ]; then
-          NDK_PATH=$(ls -d $ANDROID_HOME/ndk/25* 2>/dev/null || ls -d $ANDROID_HOME/ndk/26* 2>/dev/null || ls -d $ANDROID_HOME/ndk/* | tail -n 1)
-        else
-          NDK_PATH=$(ls -d $ANDROID_HOME/ndk/* 2>/dev/null | sort -V | tail -n 1 || echo "")
-        fi
-        if [ ! -z "$NDK_PATH" ]; then
-          echo "ndk.dir=$NDK_PATH" >> local.properties
-          echo "ANDROID_NDK_HOME=$NDK_PATH" >> $GITHUB_ENV
-        fi
-
-    # =================================================================
-    # 执行层：无任何越界外来干扰的原厂正宗多端编译
-    # =================================================================
-    - name: Reference and Execute Native Project Build Process
-      shell: bash
-      run: |
-        echo "==== 正在启动原厂 CI 闭环打包线程 ===="
-        export CGO_ENABLED=1
-        export GRADLE_OPTS="-Xmx4g -XX:MaxMetaspaceSize=1g -XX:+UseG1GC -Dorg.gradle.jvmargs=-Xmx4g"
-        
-        case "${{ env.PROJECT_NAME }}" in
+      # 1. 解析菜单选择
+      - name: Parse Selection
+        id: parse
+        shell: bash
+        run: |
+          RAW="${{ github.event.inputs.repo_and_branch }}"
+          REPO=$(echo "$RAW" | awk '{print $1}')
+          BRANCH=$(echo "$RAW" | grep -oP '\[\K[^\]]+')
+          PROJECT_NAME=$(echo "$REPO" | cut -d'/' -f2)
           
-          "husi")
-            find . -name "*.sh" -o -name "gradlew" -o -name "Makefile" | xargs chmod +x || true
-            if [ -f "build.sh" ]; then
-              ./build.sh --all || ./build.sh macos || ./build.sh
-            elif [ -f "Makefile" ] || [ -f "makefile" ]; then
-              make macos || make all || make
+          echo "TARGET_REPO=$REPO" >> $GITHUB_ENV
+          echo "TARGET_BRANCH=$BRANCH" >> $GITHUB_ENV
+          echo "PROJECT_NAME=$PROJECT_NAME" >> $GITHUB_ENV
+
+      # 2. 检出目标私有仓库到当前免费编译机
+      - name: Checkout Private Source
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.TARGET_REPO }}
+          token: ${{ secrets.PAT_TOKEN }}
+          ref: ${{ env.TARGET_BRANCH }}
+          fetch-depth: 0
+
+      # 3. 统一智能方法：融合硬编码地图与特征扫描，精准锁定唯一的编译剧本
+      - name: Select Compilation Workflow and Extract Versions
+        id: extract_env
+        shell: bash
+        run: |
+          GO_VER="1.23.x"
+          JAVA_VER="17"
+          DOTNET_VER="8.0.x"
+          CHOSEN_WF=""
+          
+          PROJECT="${{ env.PROJECT_NAME }}"
+          MODE="${{ github.event.inputs.build_mode }}"
+          
+          echo ">>>> 📡 正在加载原厂核心地图进行强匹配路由..."
+          case "$PROJECT" in
+            "FlClash")
+              CHOSEN_WF=".github/workflows/build.yaml"
+              ;;
+            "v2rayN"|"v2rayNG")
+              CHOSEN_WF=".github/workflows/build.yml"
+              ;;
+            "ClashMetaForAndroid")
+              if [ "$MODE" = "debug" ]; then
+                CHOSEN_WF=".github/workflows/build-debug.yaml"
+              elif [ "$MODE" = "nightly" ]; then
+                CHOSEN_WF=".github/workflows/build-pre-release.yaml"
+              else
+                CHOSEN_WF=".github/workflows/build-release.yaml"
+              fi
+              ;;
+            "NekoBoxForAndroid")
+              if [ "$MODE" = "debug" ] || [ "$MODE" = "nightly" ]; then
+                CHOSEN_WF=".github/workflows/preview.yml"
+              else
+                CHOSEN_WF=".github/workflows/SSR.yml"
+              fi
+              ;;
+            "husi")
+              if [ "$MODE" = "mac" ] && [ -f ".github/workflows/mac.yml" ]; then
+                CHOSEN_WF=".github/workflows/mac.yml"
+              elif [ "$MODE" = "nightly" ] && [ -f ".github/workflows/nightly.yml" ]; then
+                CHOSEN_WF=".github/workflows/nightly.yml"
+              else
+                CHOSEN_WF=".github/workflows/release.yml"
+              fi
+              ;;
+            "Exclave")
+              if [ "$MODE" = "debug" ] && [ -f ".github/workflows/debug.yml" ]; then
+                CHOSEN_WF=".github/workflows/debug.yml"
+              else
+                CHOSEN_WF=".github/workflows/release.yml"
+              fi
+              ;;
+          esac
+          
+          if [ -z "$CHOSEN_WF" ] || [ ! -f "$CHOSEN_WF" ]; then
+            echo ">>>> ⚠️ 当前项目未命中硬编码地图，正在执行全自动化特征层扫描..."
+            if [ -d ".github/workflows" ]; then
+              FILES=$(ls .github/workflows/*.yml .github/workflows/*.yaml 2>/dev/null || true)
+              for f in $FILES; do
+                fname=$(basename "$f" | tr '[:upper:]' '[:lower:]')
+                if [[ "$fname" == *"$MODE"* ]]; then
+                  if [[ "$fname" != *"lint"* && "$fname" != *"test"* && "$fname" != *"stale"* && "$fname" != *"cleanup"* && "$fname" != *"format"* ]]; then
+                    CHOSEN_WF="$f"; break
+                  fi
+                fi
+              done
+              if [ -z "$CHOSEN_WF" ]; then
+                for f in $FILES; do
+                  fname=$(basename "$f" | tr '[:upper:]' '[:lower:]')
+                  if [[ "$fname" == *"build"* || "$fname" == *"apk"* || "$fname" == *"compile"* || "$fname" == *"ci"* || "$fname" == *"desktop"* ]]; then
+                    if [[ "$fname" != *"lint"* && "$fname" != *"test"* && "$fname" != *"stale"* && "$fname" != *"cleanup"* && "$fname" != *"format"* ]]; then
+                      CHOSEN_WF="$f"; break
+                    fi
+                  fi
+                done
+              fi
+              [ -z "$CHOSEN_WF" ] && CHOSEN_WF=$(echo "$FILES" | head -n 1)
+            fi
+          fi
+          
+          if [ ! -z "$CHOSEN_WF" ] && [ -f "$CHOSEN_WF" ]; then
+            echo ">>>> 🎯 导航闭环！成功锁定本次编译的原厂剧本: $CHOSEN_WF"
+            echo "CHOSEN_WORKFLOW=$CHOSEN_WF" >> $GITHUB_ENV
+          
+            FROM_WF_GO=$(grep -oP 'go-version:\s*[\x27\x22]?\K[0-9\.]+' "$CHOSEN_WF" 2>/dev/null | head -n 1 || true)
+            if [ ! -z "$FROM_WF_GO" ]; then
+              [[ "$FROM_WF_GO" =~ ^[0-9]+\.[0-9]+$ ]] && FROM_WF_GO="${FROM_WF_GO}.x"
+              GO_VER="$FROM_WF_GO"
+            fi
+            FROM_WF_JAVA=$(grep -oP 'java-version:\s*[\x27\x22]?\K[0-9\x27\x22]+' "$CHOSEN_WF" 2>/dev/null | head -n 1 | tr -d "'\"" || true)
+            [ ! -z "$FROM_WF_JAVA" ] && JAVA_VER="$FROM_WF_JAVA"
+            FROM_WF_DOTNET=$(grep -oP 'dotnet-version:\s*[\x27\x22]?\K[0-9\.]+' "$CHOSEN_WF" 2>/dev/null | head -n 1 || true)
+            [ ! -z "$FROM_WF_DOTNET" ] && DOTNET_VER="$FROM_WF_DOTNET"
+          else
+            echo "❌ 致命错误：无论通过地图还是特征扫描，均无法找到目标编译流文件！"
+            exit 1
+          fi
+          
+          if [ -f "go.mod" ] && [ "$GO_VER" = "1.23.x" ]; then
+            GO_MOD_V=$(awk '/^go [0-9]/ {print $2}' go.mod)
+            [ ! -z "$GO_MOD_V" ] && GO_VER="${GO_MOD_V}.x"
+          fi
+          
+          echo ">>>> [智能匹配成功] DYNAMIC 环境参数解锁：Go=$GO_VER, Java=$JAVA_VER, .NET=$DOTNET_VER"
+          echo "DYNAMIC_GO=$GO_VER" >> $GITHUB_ENV
+          echo "DYNAMIC_JAVA=$JAVA_VER" >> $GITHUB_ENV
+          echo "DYNAMIC_DOTNET=$DOTNET_VER" >> $GITHUB_ENV
+
+      # 4. 递归拉取底层子模块
+      - name: Clone Submodules
+        shell: bash
+        run: |
+          git config --global url."https://${{ secrets.PAT_TOKEN }}@github.com/".insteadOf "https://github.com/"
+          git submodule update --init --recursive
+
+      # 5. 动态补全特殊交叉编译依赖
+      - name: Dynamic Inject Specialized Toolchain (Zig Engine)
+        shell: bash
+        run: |
+          if [ -f "$CHOSEN_WORKFLOW" ] && grep -q "setup-zig" "$CHOSEN_WORKFLOW"; then
+            ZIG_VER=$(grep -A 3 "setup-zig" "$CHOSEN_WORKFLOW" | grep "version:" | awk '{print $2}' | tr -d "'\"" || true)
+            [ -z "$ZIG_VER" ] && ZIG_VER="0.16.0"
+            echo ">>>> 🔧 检测到原厂深层依赖 Zig ${ZIG_VER}，正在极速架设工具链..."
+            curl -L "https://ziglang.org/download/${ZIG_VER}/zig-linux-x86_64-${ZIG_VER}.tar.xz" -o zig.tar.xz || curl -L "https://ziglang.org/builds/zig-linux-x86_64-${ZIG_VER}.tar.xz" -o zig.tar.xz
+            tar -xf zig.tar.xz
+            sudo mv zig-linux-x86_64-* /opt/zig && sudo ln -s /opt/zig/zig /usr/local/bin/zig
+            zig version
+          fi
+
+      # 6. 根据原厂工作流动态配置 Java 环境
+      - name: Set up Java Runtime
+        if: env.PROJECT_NAME != 'v2rayN'
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.DYNAMIC_JAVA }}
+          distribution: 'temurin'
+
+      # 7. 根据原厂工作流动态配置 Go 环境
+      - name: Set up Go Runtime
+        if: env.PROJECT_NAME == 'Exclave' || env.PROJECT_NAME == 'NekoBoxForAndroid' || env.PROJECT_NAME == 'husi' || env.PROJECT_NAME == 'ClashMetaForAndroid' || env.PROJECT_NAME == 'FlClash'
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.DYNAMIC_GO }}
+          cache: true
+          cache-dependency-path: "**/go.sum"
+
+      # 8. 挂载 Gradle 编译缓存
+      - name: Setup Gradle Cache for Fast Build
+        if: env.PROJECT_NAME != 'v2rayN' && env.PROJECT_NAME != 'FlClash'
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          cache-read-only: false
+
+      # 9. 根据原厂打包工作流动态配置 .NET / Flutter 环境
+      - name: Set up .NET SDK
+        if: env.PROJECT_NAME == 'v2rayN'
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DYNAMIC_DOTNET }}
+
+      - name: Set up Flutter
+        if: env.PROJECT_NAME == 'FlClash'
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          cache: true
+
+      # 10. 挂载基础本地 Android 映射属性
+      - name: Prepare Local Properties
+        if: env.PROJECT_NAME != 'v2rayN' && env.PROJECT_NAME != 'husi'
+        shell: bash
+        run: |
+          echo "sdk.dir=$ANDROID_HOME" > local.properties
+          NDK_PATH=$(ls -d $ANDROID_HOME/ndk/* 2>/dev/null | sort -V | tail -n 1 || echo "")
+          if [ ! -z "$NDK_PATH" ]; then
+            echo "ndk.dir=$NDK_PATH" >> local.properties
+            echo "ANDROID_NDK_HOME=$NDK_PATH" >> $GITHUB_ENV
+          fi
+
+      # 11. 核心高保真指令抽取与 Python 动态宏热修复官
+      - name: High-Fidelity Translate and Generate Build Script
+        shell: bash
+        run: |
+          JOB_KEYS=$(yq e '.jobs | keys | .[]' "$CHOSEN_WORKFLOW")
+          TARGET_JOB=""
+          MODE="${{ github.event.inputs.build_mode }}"
+          
+          for jk in $JOB_KEYS; do
+            jk_lower=$(echo "$jk" | tr '[:upper:]' '[:lower:]')
+            if [[ "$jk_lower" == *"$MODE"* || "$jk_lower" == *"build"* || "$jk_lower" == *"release"* || "$jk_lower" == *"apk"* || "$jk_lower" == *"compile"* ]]; then
+              TARGET_JOB="$jk"; break
+            fi
+          done
+          [ -z "$TARGET_JOB" ] && TARGET_JOB=$(echo "$JOB_KEYS" | head -n 1)
+          
+          echo ">>>> 🎯 统一智能：已精准锁定原厂编译核心 Job: [$TARGET_JOB]"
+          yq e ".jobs.\"$TARGET_JOB\".steps[].run | select(.)" "$CHOSEN_WORKFLOW" > extracted_steps.txt
+          
+          python3 -c '
+          import re
+          with open("extracted_steps.txt", "r") as f:
+              content = f.read()
+          
+          mapping = {
+              "matrix.platform": "$MATRIX_PLATFORM",
+              "matrix.arch": "$MATRIX_ARCH",
+              "steps.project_version.outputs.version": "$VERSION",
+              "steps.version.outputs.go_version": "$GO_VERSION",
+              "env.DARWIN_SDKROOT": "$DARWIN_SDKROOT",
+              "env.RELEASE_TAG": "$RELEASE_TAG",
+              "env.FILE_SUFFIX": "$FILE_SUFFIX",
+              "github.token": "$GH_TOKEN",
+              "github.ref": "$GITHUB_REF"
+          }
+          
+          pat = r"\$" + r"\{\{\s*(.*?)\s*\}\}"
+          
+          def repl(match):
+              key = match.group(1).strip()
+              return mapping.get(key, match.group(0))
+          
+          content = re.sub(pat, repl, content)
+          
+          with open("extracted_steps.txt", "w") as f:
+              f.write(content)
+          '
+          
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            echo -e "\$MATRIX_PLATFORM='${{ github.event.inputs.target_platform }}'\n\$MATRIX_ARCH='${{ github.event.inputs.target_arch }}'\n\$GH_TOKEN='${{ secrets.PAT_TOKEN }}'\n" > dynamic_run.ps1
+            cat extracted_steps.txt >> dynamic_run.ps1
+            echo ">>>> [Windows 翻译官] 原厂表达式在线翻译成功！"
+          else
+            if [ "${{ github.event.inputs.target_arch }}" = "all" ]; then
+              echo -e "#!/bin/bash\nexport CGO_ENABLED=1\nexport GRADLE_OPTS=\"-Xmx4g\"\nexport MATRIX_PLATFORM='${{ github.event.inputs.target_platform }}'\nexport GH_TOKEN='${{ secrets.PAT_TOKEN }}'\nexport GITHUB_REF='refs/heads/${{ env.TARGET_BRANCH }}'\n" > dynamic_run.sh
             else
-              export GOOS=darwin GOARCH=amd64
-              go build -v -ldflags="-s -w" -o husi-mac-amd64 .
-              export GOOS=darwin GOARCH=arm64
-              go build -v -ldflags="-s -w" -o husi-mac-arm64 .
+              echo -e "#!/bin/bash\nexport CGO_ENABLED=1\nexport GRADLE_OPTS=\"-Xmx4g\"\nexport MATRIX_PLATFORM='${{ github.event.inputs.target_platform }}'\nexport MATRIX_ARCH='${{ github.event.inputs.target_arch }}'\nexport GH_TOKEN='${{ secrets.PAT_TOKEN }}'\nexport GITHUB_REF='refs/heads/${{ env.TARGET_BRANCH }}'\n" > dynamic_run.sh
             fi
-            if [ -f "gradlew" ]; then
-              ./gradlew assembleRelease --stacktrace
-            fi
-            ;;
+            cat extracted_steps.txt >> dynamic_run.sh
+            chmod +x dynamic_run.sh
+            echo ">>>> [Unix 翻译官] 原厂表达式在线翻译成功！"
+          fi
 
-          "NekoBoxForAndroid")
-            # 1. 现场无感源码合成、就地装配 MatsuriDayo 专属魔改版 GoMobile 链
-            echo "⚙️ [Matsuri 专线] 正在构建专门适配工程内核的魔改编译器..."
-            mkdir -p gm-build-bin && cd gm-build-bin
-            git init
-            git remote add origin https://github.com/MatsuriDayo/gomobile.git
-            git fetch --depth=1 origin
-            git checkout FETCH_HEAD
-            go install ./cmd/gomobile
-            go install ./cmd/gobind
-            
-            cd "$GITHUB_WORKSPACE"
-            echo "$HOME/go/bin" >> $GITHUB_PATH
-            $HOME/go/bin/gomobile init
-            echo "go.dir=$(which go | sed 's/\/bin\/go//')" >> local.properties
-            
-            # 2. 赋予 gradlew 物理可执行权限
-            chmod +x gradlew
-            
-            # 🚀【原厂正位大招】直接拉起官方变体里唯一正统的内核 AAR 生产依赖链
-            # 拒绝通过外部 go 命令干写。直接呼叫对齐你项目层级的特定 Fdroid 绑定节点
-            echo "⚙️ [Matsuri 专线] 正在由 Gradle 插件原生触发底层的 Go 核心 AAR 编译链接..."
-            ./gradlew :app:gobindFdroidRelease --stacktrace || ./gradlew :app:gobind --stacktrace || ./gradlew gobind --stacktrace || true
-            
-            # 3. 此时 Go 内核已被原厂依赖链无缝融进槽位，一气呵成产出主变体包
-            echo "🚀 正在编译 Fdroid 渠道 Release APK..."
-            ./gradlew :app:assembleFdroidRelease --stacktrace
-            ;;
-            
-          "ClashMetaForAndroid")
-            chmod +x gradlew
-            ./gradlew :core:assembleRelease || true
-            ./gradlew assembleRelease --stacktrace
-            ;;
-            
-          "Exclave"|"v2rayNG")
-            chmod +x gradlew
-            ./gradlew assembleRelease
-            ;;
-            
-          "FlClash")
-            if [ -f "android/app/build.gradle" ]; then
-              sed -i 's/signingConfigs.release/signingConfigs.debug/g' android/app/build.gradle
-            fi
-            flutter pub get
-            flutter build apk --release
-            if flutter devices | grep -q "linux"; then
-               flutter build linux --release || true
-            fi
-            ;;
-            
-          *)
-            echo "跳过 Linux 执行"
-            ;;
-        esac
+      # 12-A. Unix 跑道执行（Android、Go、Flutter、husi 多端交叉编译）
+      - name: Execute Dynamic Build Process [Linux / macOS Runner]
+        if: ${{ runner.os != 'Windows' }}
+        shell: bash
+        run: |
+          echo "=========================================="
+          echo "🚀 正在使用公开库免费算力，动态重放原厂打包指令..."
+          echo "=========================================="
+          if [ "${{ github.event.inputs.target_arch }}" = "all" ]; then
+            for arch in arm64 amd64 arm; do
+              export MATRIX_ARCH=$arch
+              ./dynamic_run.sh
+            done
+          else
+            ./dynamic_run.sh
+          fi
 
-    # 🟢 针对 v2rayN Windows 桌面端
-    - name: Execute Native Project Build Process [Windows v2rayN]
-      if: env.PROJECT_NAME == 'v2rayN'
-      shell: pwsh
-      run: |
-        dotnet restore
-        dotnet publish v2rayN/v2rayN.csproj -c Release -r win-x64 --self-contained true /p:PublishSingleFile=true /p:PublishReadyToRun=true
+      # 12-B. Windows 跑道执行
+      - name: Execute Dynamic Build Process [Windows Runner]
+        if: ${{ runner.os == 'Windows' }}
+        shell: pwsh
+        run: |
+          .\dynamic_run.ps1
 
-    # =================================================================
-    # 产物层
-    # =================================================================
-    - name: Archive and Upload Artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: ${{ env.PROJECT_NAME }}-${{ env.TARGET_BRANCH }}-Artifacts
-        path: |
-          app/build/outputs/apk/**/*.apk
-          app/build/outputs/bundle/**/*.aab
-          build/app/outputs/flutter-apk/*.apk
-          build/linux/x64/release/bundle/**/*
-          v2rayN/bin/Release/net8.0/win-x64/publish/*
-          bin/Release/net8.0/win-x64/publish/*
-          **/husi-mac*
-          **/*.dmg
-          **/*.app
-          **/*.zip
-          **/*.tar.gz
-          *.apk
-          *.aar
-        if-no-files-found: warn
+      # ⭐ 13. 智能清洗与绝对扁平化收集箱（全面使用跨平台 Python 引擎，精准剔除套娃及无关依赖垃圾）
+      - name: Flatten and Clean Output Binaries via Smart Python Filter
+        shell: python
+        run: |
+          import os
+          import shutil
+
+          project_name = os.environ.get("PROJECT_NAME", "").lower()
+          target_dir = "unified_dist"
+          os.makedirs(target_dir, exist_ok=True)
+
+          # 锁定允许的最终安装包格式
+          allowed_exts = (".apk", ".aab", ".dmg", ".zip", ".tar.gz", ".aar", ".exe")
+          # 强力拉黑中间件与垃圾临时缓存文件夹
+          ignored_dirs = [".git", ".gradle", "gradle-wrapper", "node_modules", "intermediates", "build-cache", "cache", "tmp", "temp", "mock", "test", "tests", "obj"]
+
+          print(f">>>> 🔍 智能指纹过滤器已启动！正在深度对齐核心项目名: {project_name}")
+
+          for root, dirs, files in os.walk("."):
+              # 路径物理除毒
+              if any(ignored in root.replace("\\", "/").split("/") for ignored in ignored_dirs):
+                  continue
+              if target_dir in root:
+                  continue
+          
+              for file in files:
+                  file_lower = file.lower()
+                  path_lower = root.lower()
+          
+                  if not file_lower.endswith(allowed_exts):
+                      continue
+          
+                  is_match = False
+          
+                  # 🟢 准则一：按照主人吩咐，文件名直接命中当前项目特征指纹（如 exclave-*.apk, husi-*.dmg 等）
+                  if project_name and project_name in file_lower:
+                      is_match = True
+                  # 🟢 准则二：文件名带有标准官方打包关键字
+                  elif any(k in file_lower for k in ["release", "unsigned", "installer", "setup", "publish", "uberjar"]):
+                      is_match = True
+                  # 🟢 准则三：文件深埋在原厂的绝对生产线输出槽中
+                  elif any(k in path_lower for k in ["outputs/apk", "bin/release", "packages", "publish"]):
+                      is_match = True
+          
+                  if is_match:
+                      src_path = os.path.join(root, file)
+                      dest_path = os.path.join(target_dir, file)
+                      print(f"-> [命中纯净产物] 成功剥离套娃: {src_path} => 写入 => {dest_path}")
+                      shutil.copy2(src_path, dest_path)
+
+      # ⭐ 14. 联动发布（换装正宗 GITHUB_TOKEN，100% 打通 Release 页面）
+      - name: Push and Publish to Public Repo Release Page
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }} # 使用具有写权限的本地官方安全令牌
+        shell: bash
+        run: |
+          if [ -d "unified_dist" ] && [ "$(ls -A unified_dist 2>/dev/null)" ]; then
+            CLEAN_BRANCH=$(echo "${{ env.TARGET_BRANCH }}" | tr '/' '-')
+            TAG_NAME="${{ env.PROJECT_NAME }}-${CLEAN_BRANCH}-v${{ github.run_number }}"
+            echo ">>>> 🚀 正在向公开仓库 Release 页面上架独立节点: $TAG_NAME"
+          
+            # 使用官方自带的稳定上架机制
+            gh release create "$TAG_NAME" unified_dist/* --title "$TAG_NAME" --notes "Automated smart leak build from private upstream: ${{ env.TARGET_REPO }} [${{ env.TARGET_BRANCH }}]" --prerelease
+            echo ">>>> 🎉 恭喜主人！全线发布成功！请直接刷新当前公开仓库的 Release 标签页查看下载！"
+          else
+            echo "⚠️ 未扫描到符合项目指纹的纯净编译产物，跳过 Release 发布。"
+          fi
+
+      # 15. 备份层：Artifacts 此时同样享受纯净无套娃、文件直接平铺待遇
+      - name: Archive and Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.PROJECT_NAME }}--${{ env.TARGET_BRANCH }}--${{ github.event.inputs.target_platform }}--${{ github.event.inputs.target_arch }}--Artifacts
+          path: unified_dist/*
+          if-no-files-found: warn
