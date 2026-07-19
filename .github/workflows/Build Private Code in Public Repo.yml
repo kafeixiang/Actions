@@ -3,36 +3,45 @@ name: Build Private Code in Public Repo (Dynamic Workflow Engine)
 on:
   workflow_dispatch:
     inputs:
-      repo_and_branch:
-        description: '🚀 选择【私有项目】与【目标分支】'
+      # 1. 精简后的 10 个软件工程项目
+      repo:
+        description: '🚀 选择【目标私有项目】'
         required: true
-        default: 'kafeixiang/husi [dev-3]'
+        default: 'kafeixiang/husi'
         type: choice
         options:
-          - 'kafeixiang/husi [dev-3]'
-          - 'kafeixiang/husi [main]'
-          - 'kafeixiang/master [master]'
-          - 'kafeixiang/Exclave [dev]'
-          - 'kafeixiang/ClashMetaForAndroid [main]'
-          - 'kafeixiang/ClashMetaForAndroid [dev]'
-          - 'kafeixiang/v2rayNG [master]'
-          - 'kafeixiang/v2rayNG [dev]'
-          - 'kafeixiang/NekoBoxForAndroid [main]'
-          - 'kafeixiang/NekoBoxForAndroid [dev]'
-          - 'kafeixiang/FlClash [main]'
-          - 'kafeixiang/FlClash [dev]'
-          - 'kafeixiang/v2rayN [master]'
-          - 'kafeixiang/v2rayN [wpf]'
-          - 'kafeixiang/sing-box [main]'
-          - 'kafeixiang/sing-box [master]'
-          - 'kafeixiang/mihomo [main]'
-          - 'kafeixiang/mihomo [master]'
-          - 'kafeixiang/Xray [main]'
-          - 'kafeixiang/Xray [master]'
-          - 'kafeixiang/chromego_merge [main]'
-          - 'kafeixiang/chromego_merge [master]'
-          - 'kafeixiang/jid [main]'
-          - 'kafeixiang/jid [master]'
+          - 'kafeixiang/husi'
+          - 'kafeixiang/Exclave'
+          - 'kafeixiang/ClashMetaForAndroid'
+          - 'kafeixiang/v2rayNG'
+          - 'kafeixiang/NekoBoxForAndroid'
+          - 'kafeixiang/FlClash'
+          - 'kafeixiang/v2rayN'
+          - 'kafeixiang/sing-box'
+          - 'kafeixiang/mihomo'
+          - 'kafeixiang/Xray'
+
+      # ⭐ 优化：默认常用分支已完美对齐为 'dev'
+      branch_preset:
+        description: '🌿 选择【常用分支】(若选最后一项，则在下方手动输入)'
+        required: true
+        default: 'dev'
+        type: choice
+        options:
+          - 'dev'
+          - 'main'
+          - 'master'
+          - 'dev-yl2-vless-xhttp'
+          - 'FlClash'
+          - 'Alpha'
+          - 'CUSTOM_INPUT_BOX'
+
+      # 3. 自由文本框兜底，兼容任意未知临时分支
+      custom_branch:
+        description: '✍️ 手动输入【自定义分支】(仅在上方选择 CUSTOM_INPUT_BOX 时生效)'
+        required: false
+        default: ''
+        type: string
 
       build_mode:
         description: '🛠️ 选择【编译流剧本】(自适应匹配原厂发布模式)'
@@ -68,7 +77,6 @@ on:
           - 'amd64'
           - 'arm'
 
-# ⭐ 核心修复 1：顶级权限过载！强行开启公开仓库的 Release 物理写入通道
 permissions:
   contents: write
 
@@ -83,9 +91,9 @@ jobs:
     steps:
       - id: set_os
         run: |
-          RAW="${{ github.event.inputs.repo_and_branch }}"
+          REPO="${{ github.event.inputs.repo }}"
           MODE="${{ github.event.inputs.build_mode }}"
-          if echo "$RAW" | grep -q "v2rayN"; then
+          if echo "$REPO" | grep -q "v2rayN"; then
             echo "os_runner=windows-latest" >> $GITHUB_OUTPUT
           elif [ "$MODE" = "mac" ]; then
             echo "os_runner=macos-latest" >> $GITHUB_OUTPUT
@@ -98,14 +106,26 @@ jobs:
     runs-on: ${{ needs.setup_matrix.outputs.os_runner }}
 
     steps:
-      # 1. 解析菜单选择
+      # 1. 智能合流：动态研判白名单预设与手打输入
       - name: Parse Selection
         id: parse
         shell: bash
         run: |
-          RAW="${{ github.event.inputs.repo_and_branch }}"
-          REPO=$(echo "$RAW" | awk '{print $1}')
-          BRANCH=$(echo "$RAW" | grep -oP '\[\K[^\]]+')
+          REPO="${{ github.event.inputs.repo }}"
+          PRESET="${{ github.event.inputs.branch_preset }}"
+          CUSTOM="${{ github.event.inputs.custom_branch }}"
+          
+          if [ "$PRESET" = "CUSTOM_INPUT_BOX" ]; then
+            BRANCH="$CUSTOM"
+          else
+            BRANCH="$PRESET"
+          fi
+          
+          if [ -z "$BRANCH" ]; then
+            echo "❌ 错误：你选择了手动输入分支，但下方的自定义输入框留空了！"
+            exit 1
+          fi
+          
           PROJECT_NAME=$(echo "$REPO" | cut -d'/' -f2)
           
           echo "TARGET_REPO=$REPO" >> $GITHUB_ENV
@@ -388,7 +408,7 @@ jobs:
         run: |
           .\dynamic_run.ps1
 
-      # ⭐ 13. 智能清洗与绝对扁平化收集箱（全面使用跨平台 Python 引擎，精准剔除套娃及无关依赖垃圾）
+      # 13. 智能指纹清洗与绝对扁平化收集箱
       - name: Flatten and Clean Output Binaries via Smart Python Filter
         shell: python
         run: |
@@ -399,15 +419,12 @@ jobs:
           target_dir = "unified_dist"
           os.makedirs(target_dir, exist_ok=True)
 
-          # 锁定允许的最终安装包格式
           allowed_exts = (".apk", ".aab", ".dmg", ".zip", ".tar.gz", ".aar", ".exe")
-          # 强力拉黑中间件与垃圾临时缓存文件夹
           ignored_dirs = [".git", ".gradle", "gradle-wrapper", "node_modules", "intermediates", "build-cache", "cache", "tmp", "temp", "mock", "test", "tests", "obj"]
 
           print(f">>>> 🔍 智能指纹过滤器已启动！正在深度对齐核心项目名: {project_name}")
 
           for root, dirs, files in os.walk("."):
-              # 路径物理除毒
               if any(ignored in root.replace("\\", "/").split("/") for ignored in ignored_dirs):
                   continue
               if target_dir in root:
@@ -422,13 +439,10 @@ jobs:
           
                   is_match = False
           
-                  # 🟢 准则一：按照主人吩咐，文件名直接命中当前项目特征指纹（如 exclave-*.apk, husi-*.dmg 等）
                   if project_name and project_name in file_lower:
                       is_match = True
-                  # 🟢 准则二：文件名带有标准官方打包关键字
                   elif any(k in file_lower for k in ["release", "unsigned", "installer", "setup", "publish", "uberjar"]):
                       is_match = True
-                  # 🟢 准则三：文件深埋在原厂的绝对生产线输出槽中
                   elif any(k in path_lower for k in ["outputs/apk", "bin/release", "packages", "publish"]):
                       is_match = True
           
@@ -438,10 +452,10 @@ jobs:
                       print(f"-> [命中纯净产物] 成功剥离套娃: {src_path} => 写入 => {dest_path}")
                       shutil.copy2(src_path, dest_path)
 
-      # ⭐ 14. 联动发布（换装正宗 GITHUB_TOKEN，100% 打通 Release 页面）
+      # 14. 联动发布（打通 Release 页面）
       - name: Push and Publish to Public Repo Release Page
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }} # 使用具有写权限的本地官方安全令牌
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
           if [ -d "unified_dist" ] && [ "$(ls -A unified_dist 2>/dev/null)" ]; then
@@ -449,14 +463,13 @@ jobs:
             TAG_NAME="${{ env.PROJECT_NAME }}-${CLEAN_BRANCH}-v${{ github.run_number }}"
             echo ">>>> 🚀 正在向公开仓库 Release 页面上架独立节点: $TAG_NAME"
           
-            # 使用官方自带的稳定上架机制
             gh release create "$TAG_NAME" unified_dist/* --title "$TAG_NAME" --notes "Automated smart leak build from private upstream: ${{ env.TARGET_REPO }} [${{ env.TARGET_BRANCH }}]" --prerelease
             echo ">>>> 🎉 恭喜主人！全线发布成功！请直接刷新当前公开仓库的 Release 标签页查看下载！"
           else
             echo "⚠️ 未扫描到符合项目指纹的纯净编译产物，跳过 Release 发布。"
           fi
 
-      # 15. 备份层：Artifacts 此时同样享受纯净无套娃、文件直接平铺待遇
+      # 15. 备份层：Artifacts 扁平化归档
       - name: Archive and Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
