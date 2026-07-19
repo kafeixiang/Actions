@@ -74,6 +74,13 @@ on:
           - 'amd64'
           - 'arm'
 
+      # ⭐ 核心进化：新增 Release 上传开关，默认关闭（不上传）
+      upload_to_release:
+        description: '📦 是否同步上架到公开库的 Release 页面 (默认不上传)'
+        required: true
+        default: false
+        type: boolean
+
 permissions:
   contents: write
 
@@ -406,7 +413,7 @@ jobs:
         run: |
           .\dynamic_run.ps1
 
-      # ⭐ 13. 顶级智能脱壳（魔改核心）：全面对齐 [项目名]-[版本].[格式] 复合模糊指纹算法，完美打通 .aar 搜刮通道
+      # 13. 顶级智能脱壳：全面对齐项目特征，完美搜刮发布包与 .aar 底层内核
       - name: Flatten and Clean Output Binaries via Fuzzy Python Filter
         shell: python
         run: |
@@ -415,14 +422,12 @@ jobs:
           import re
 
           project_name = os.environ.get("PROJECT_NAME", "").lower()
-          # 🟢 剔除名字中的无用环境修饰符（如 forandroid, _merge），提纯最原始的项目字根
           root_word = project_name.replace("forandroid", "").replace("for_android", "").replace("-android", "").replace("desktop", "").replace("_merge", "")
           root_word_clean = re.sub(r'[-_\s]', '', root_word)
           
           target_dir = "unified_dist"
           os.makedirs(target_dir, exist_ok=True)
 
-          # 🟢 全面合流：.aar 已正式被拔高为与 .apk 同级别的战略发布级提取格式
           allowed_exts = (".apk", ".aab", ".dmg", ".zip", ".tar.gz", ".aar", ".exe")
           ignored_dirs = [".git", ".gradle", "gradle-wrapper", "node_modules", "intermediates", "build-cache", "cache", "tmp", "temp", "mock", "test", "tests", "obj"]
 
@@ -439,28 +444,25 @@ jobs:
                   if not file_lower.endswith(allowed_exts):
                       continue
           
-                  # 文本归一化处理（抹除文件名中的中划线和下划线，阻断原厂拼写差异干扰）
                   file_clean = re.sub(r'[-_\s]', '', file_lower)
                   is_match = False
           
-                  # 🎯 模糊机制 1：文件名清洗后，完美命中主人的项目特征码（如 husi*.apk, exclave*.aar）
                   if root_word_clean in file_clean:
                       is_match = True
-                  # 🎯 模糊机制 2：针对可能存在复合长文件名前缀变形（如 libexclavecore...），前瞻捕捉前 4 位前缀变体
                   elif len(root_word_clean) >= 4 and root_word_clean[:4] in file_clean:
                       is_match = True
-                  # 🎯 机制 3：若文件名遭遇极端变形，直接对准原厂标准出货槽执行地毯式捞取
                   elif any(k in file_clean for k in ["release", "unsigned", "installer", "uberjar"]) and any(k in root.lower() for k in ["outputs/apk", "bin/release", "packages", "libs"]):
                       is_match = True
           
                   if is_match:
                       src_path = os.path.join(root, file)
                       dest_path = os.path.join(target_dir, file)
-                      print(f"-> [💥 模糊指纹命中] 成功抽取纯净二进制产物: {src_path} => 归档 => {dest_path}")
+                      print(f"-> [💥 模糊指纹命中] 成功抽取纯净产物: {src_path} => 归档 => {dest_path}")
                       shutil.copy2(src_path, dest_path)
 
-      # 14. 联动发布（强制定向当前公开仓库的 Release 页面，彻底打破 403 权限死锁）
+      # ⭐ 14. 联动发布（加入了 if 逻辑守卫：只有当你在顶部菜单勾选了上传时，本步骤才会执行）
       - name: Push and Publish to Public Repo Release Page
+        if: ${{ github.event.inputs.upload_to_release == 'true' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
@@ -470,14 +472,13 @@ jobs:
             TAG_NAME="${{ env.PROJECT_NAME }}-${CLEAN_BRANCH}-v${{ github.run_number }}"
             echo ">>>> 🚀 正在向当前公开库上架精纯 Release 产物: $TAG_NAME"
           
-            # 使用显式注入的 --repo 约束指令，确保 100% 写入公开仓库自身，拒绝越权报错
             gh release create "$TAG_NAME" unified_dist/* --repo "${{ github.repository }}" --title "$TAG_NAME" --notes "Automated smart build from private upstream: ${{ env.TARGET_REPO }} [${{ env.TARGET_BRANCH }}]" --prerelease
             echo ">>>> 🎉 史诗级通关！发布大功告成！直接刷新你的免费公开仓库 Release 栏即可！"
           else
             echo "⚠️ 未扫描到符合项目指纹的纯净编译产物，跳过 Release 发布。"
           fi
 
-      # 15. 备份层：Artifacts 平铺归档
+      # 15. 备份层：无论是否同步 Release，Artifacts 平铺归档永远正常生成供你随时下载
       - name: Archive and Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
