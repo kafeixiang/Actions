@@ -87,6 +87,7 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
 
 jobs:
+  # ⭐ 优化 1：算力精准路由！针对 husi 交叉编译 macOS/Windows 依然锁定 Ubuntu 跑道
   setup_matrix:
     runs-on: ubuntu-latest
     outputs:
@@ -96,10 +97,18 @@ jobs:
         run: |
           REPO="${{ github.event.inputs.repo }}"
           MODE="${{ github.event.inputs.build_mode }}"
+          PLAT="${{ github.event.inputs.target_platform }}"
+          
           if echo "$REPO" | grep -q "v2rayN"; then
             echo "os_runner=windows-latest" >> $GITHUB_OUTPUT
-          elif [ "$MODE" = "mac" ]; then
-            echo "os_runner=macos-latest" >> $GITHUB_OUTPUT
+          elif [ "$PLAT" = "windows" ] && ! echo "$REPO" | grep -q "husi"; then
+            echo "os_runner=windows-latest" >> $GITHUB_OUTPUT
+          elif [ "$MODE" = "mac" ] || [ "$PLAT" = "macos" ]; then
+            if echo "$REPO" | grep -q "husi"; then
+              echo "os_runner=ubuntu-24.04" >> $GITHUB_OUTPUT
+            else
+              echo "os_runner=macos-latest" >> $GITHUB_OUTPUT
+            fi
           else
             echo "os_runner=ubuntu-24.04" >> $GITHUB_OUTPUT
           fi
@@ -134,6 +143,8 @@ jobs:
           echo "TARGET_REPO=$REPO" >> $GITHUB_ENV
           echo "TARGET_BRANCH=$BRANCH" >> $GITHUB_ENV
           echo "PROJECT_NAME=$PROJECT_NAME" >> $GITHUB_ENV
+          echo "TARGET_PLATFORM=${{ github.event.inputs.target_platform }}" >> $GITHUB_ENV
+          echo "BUILD_MODE=${{ github.event.inputs.build_mode }}" >> $GITHUB_ENV
 
       # 2. 检出目标私有仓库
       - name: Checkout Private Source
@@ -144,7 +155,7 @@ jobs:
           ref: ${{ env.TARGET_BRANCH }}
           fetch-depth: 0
 
-      # 3. 剧本锁定与环境参数抓取
+      # ⭐ 3. 剧本锁定与环境参数抓取（完美咬合 husi 桌面端工作流）
       - name: Select Compilation Workflow and Extract Versions
         id: extract_env
         shell: bash
@@ -155,7 +166,8 @@ jobs:
           CHOSEN_WF=""
           
           PROJECT="${{ env.PROJECT_NAME }}"
-          MODE="${{ github.event.inputs.build_mode }}"
+          MODE="${{ env.BUILD_MODE }}"
+          PLAT="${{ env.TARGET_PLATFORM }}"
           
           echo ">>>> 📡 正在加载原厂核心地图进行强匹配路由..."
           case "$PROJECT" in
@@ -182,8 +194,20 @@ jobs:
               fi
               ;;
             "husi")
-              if [ "$MODE" = "mac" ] && [ -f ".github/workflows/mac.yml" ]; then
-                CHOSEN_WF=".github/workflows/mac.yml"
+              if [ "$PLAT" = "macos" ] || [ "$PLAT" = "windows" ] || [ "$MODE" = "mac" ] || [ "$MODE" = "desktop" ]; then
+                if [ -f ".github/workflows/desktop.yml" ]; then
+                  CHOSEN_WF=".github/workflows/desktop.yml"
+                elif [ -f ".github/workflows/mac.yml" ]; then
+                  CHOSEN_WF=".github/workflows/mac.yml"
+                elif [ -f ".github/workflows/desktop.yaml" ]; then
+                  CHOSEN_WF=".github/workflows/desktop.yaml"
+                else
+                  for f in .github/workflows/*.yml .github/workflows/*.yaml; do
+                    if grep -q "Build Desktop" "$f" 2>/dev/null; then
+                      CHOSEN_WF="$f"; break
+                    fi
+                  done
+                fi
               elif [ "$MODE" = "nightly" ] && [ -f ".github/workflows/nightly.yml" ]; then
                 CHOSEN_WF=".github/workflows/nightly.yml"
               else
@@ -205,7 +229,7 @@ jobs:
               FILES=$(ls .github/workflows/*.yml .github/workflows/*.yaml 2>/dev/null || true)
               for f in $FILES; do
                 fname=$(basename "$f" | tr '[:upper:]' '[:lower:]')
-                if [[ "$fname" == *"$MODE"* ]]; then
+                if [[ "$fname" == *"$MODE"* || "$fname" == *"$PLAT"* ]]; then
                   if [[ "$fname" != *"lint"* && "$fname" != *"test"* && "$fname" != *"stale"* && "$fname" != *"cleanup"* && "$fname" != *"format"* ]]; then
                     CHOSEN_WF="$f"; break
                   fi
@@ -312,9 +336,9 @@ jobs:
           channel: 'stable'
           cache: true
 
-      # 10. 挂载基础本地 Android 映射属性
+      # 10. 挂载 Android 本地映射属性（非 Android 编译自动跳过）
       - name: Prepare Local Properties
-        if: env.PROJECT_NAME != 'v2rayN'
+        if: env.PROJECT_NAME != 'v2rayN' && env.TARGET_PLATFORM == 'android'
         shell: bash
         run: |
           echo "sdk.dir=$ANDROID_HOME" > local.properties
@@ -324,27 +348,27 @@ jobs:
             echo "ANDROID_NDK_HOME=$NDK_PATH" >> $GITHUB_ENV
           fi
 
-      # ⭐ 11. 智能 Job 抽取 + 路径容错重构（解决 cd 报错与 cat 目录报错）
+      # ⭐ 11. 核心改进：Python 智能提取 + 步骤级 if 过滤，完美剥离对应平台的编译步骤
       - name: High-Fidelity Translate and Generate Build Script
         shell: bash
         run: |
-          echo ">>>> 🎯 正在智能检索并过滤匹配平台 [${{ github.event.inputs.target_platform }}] 的目标 Job..."
-          
-          # 提取符合要求的 Job 步骤（排除仅针对桌面/Cronet 的无关多余步骤）
-          yq e '.jobs | to_entries | .[] | select(.key | test("(?i)android|build|release|libcore|core|apk")) | .value.steps[].run | select(.)' "$CHOSEN_WORKFLOW" > extracted_steps.txt
-          
-          # 如果过滤后为空，保底提取全量步骤
-          if [ ! -s extracted_steps.txt ]; then
-            yq e '.jobs[] | select(.steps != null) | .steps[].run | select(.)' "$CHOSEN_WORKFLOW" > extracted_steps.txt
-          fi
-
           python3 -c '
-          import re
+          import yaml, re, os
 
-          with open("extracted_steps.txt", "r") as f:
-              lines = f.readlines()
+          chosen_wf = os.environ.get("CHOSEN_WORKFLOW", "")
+          target_platform = os.environ.get("TARGET_PLATFORM", "android").lower()
+          target_branch = os.environ.get("TARGET_BRANCH", "dev")
 
-          processed_lines = []
+          if not os.path.exists(chosen_wf):
+              print(f"❌ 剧本文件不存在: {chosen_wf}")
+              exit(1)
+
+          with open(chosen_wf, "r", encoding="utf-8") as f:
+              wf = yaml.safe_load(f)
+
+          jobs = wf.get("jobs", {})
+          extracted_cmds = []
+
           mapping = {
               "matrix.platform": "$MATRIX_PLATFORM",
               "matrix.arch": "$MATRIX_ARCH",
@@ -355,30 +379,63 @@ jobs:
               "env.RELEASE_TAG": "$RELEASE_TAG",
               "env.FILE_SUFFIX": "$FILE_SUFFIX",
               "github.token": "$GH_TOKEN",
-              "github.ref": "$GITHUB_REF"
+              "github.ref": "$GITHUB_REF",
+              "github.ref_name": "$TARGET_BRANCH"
           }
 
           pat = r"\$" + r"\{\{\s*(.*?)\s*\}\}"
 
-          for line in lines:
-              # 替换常规变量
-              def repl(match):
-                  key = match.group(1).strip()
-                  return mapping.get(key, match.group(0))
+          for job_key, job_val in jobs.items():
+              if not isinstance(job_val, dict):
+                  continue
+              steps = job_val.get("steps", [])
+              if not steps:
+                  continue
           
-              line = re.sub(pat, repl, line)
-              # 清理未匹配到的 secrets 或其他 Action 内部表达
-              line = re.sub(r"\$\{\{\s*.*?\s*\}\}", "", line)
+              for step in steps:
+                  if not isinstance(step, dict):
+                      continue
+                  run_cmd = step.get("run")
+                  if not run_cmd:
+                      continue
+          
+                  step_if = str(step.get("if", "")).lower()
+          
+                  # 🟢 平台过滤器：排除不属于当前 target_platform 的步骤
+                  if "matrix.platform == 'macos'" in step_if or "matrix.platform == \"macos\"" in step_if:
+                      if target_platform != "macos":
+                          continue
+                  elif "matrix.platform == 'windows'" in step_if or "matrix.platform == \"windows\"" in step_if:
+                      if target_platform != "windows":
+                          continue
+                  elif "matrix.platform == 'android'" in step_if or "matrix.platform == \"android\"" in step_if:
+                      if target_platform != "android":
+                          continue
+          
+                  lines = run_cmd.splitlines()
+                  for line in lines:
+                      def repl(m):
+                          k = m.group(1).strip()
+                          return mapping.get(k, m.group(0))
+          
+                      line = re.sub(pat, repl, line)
+                      line = re.sub(r"\$\{\{\s*.*?\s*\}\}", "", line)
+          
+                      if re.match(r"^\s*cd\s+", line):
+                          tdir = line.strip().split(maxsplit=1)[1]
+                          line = f"mkdir -p {tdir} 2>/dev/null; cd {tdir} || true"
+          
+                      # GITHUB_ENV 动态变量即时导出支持
+                      if ">> $GITHUB_ENV" in line or ">> \"$GITHUB_ENV\"" in line:
+                          var_match = re.search(r"echo\s+[\"\']?([A-Za-z0-9_]+)=([^\"\'>]+)[\"\']?\s*>>", line)
+                          if var_match:
+                              vname, vval = var_match.group(1), var_match.group(2)
+                              line += f"; export {vname}=\"{vval}\""
+          
+                      extracted_cmds.append(line)
 
-              # 🟢 关键加固：对 cd 切换目录命令加上安全保护，防止路径不存在时中途崩盘
-              if re.match(r"^\s*cd\s+", line):
-                  target_dir = line.strip().split(maxsplit=1)[1]
-                  line = f"mkdir -p {target_dir} 2>/dev/null; cd {target_dir} || true\n"
-
-              processed_lines.append(line)
-
-          with open("extracted_steps.txt", "w") as f:
-              f.writelines(processed_lines)
+          with open("extracted_steps.txt", "w", encoding="utf-8") as f:
+              f.write("\n".join(extracted_cmds) + "\n")
           '
           
           if [ "$RUNNER_OS" = "Windows" ]; then
@@ -396,25 +453,21 @@ jobs:
             echo ">>>> [Unix 翻译官] 原厂表达式在线翻译成功！"
           fi
 
-      # ⭐ 12-A. Unix 跑道执行（含 Libcore 缺失保底编译与错误中断防护）
+      # 12-A. Unix 跑道执行（Linux / macOS）
       - name: Execute Dynamic Build Process [Linux / macOS Runner]
         if: ${{ runner.os != 'Windows' }}
         shell: bash
         run: |
           echo "=========================================="
           echo "🚀 正在使用公开库免费算力，动态重放原厂打包指令..."
+          echo "   目标平台: ${{ github.event.inputs.target_platform }}"
           echo "=========================================="
           mkdir -p temp_staging
           
-          # 🟢 husi / sing-box 专属逻辑：检测并保底触发 libcore 编译
           if [ "${{ env.PROJECT_NAME }}" = "husi" ] || [ "${{ env.PROJECT_NAME }}" = "sing-box" ]; then
-            if [ ! -f "composeApp/libs/libcore.aar" ] && [ ! -f "app/libs/libcore.aar" ]; then
-              echo ">>>> 🔧 检测到底层 libcore.aar 缺失，正在优先触发核心内核编译..."
-              if [ -f "buildScript/lib/core.sh" ]; then
-                bash buildScript/lib/core.sh || true
-              elif [ -d "libcore" ]; then
-                go run ./libcore || true
-              fi
+            if [ "${{ env.TARGET_PLATFORM }}" = "android" ] && [ ! -f "composeApp/libs/libcore.aar" ]; then
+              echo ">>>> 🔧 检测到底层 libcore.aar 缺失，优先触发核心内核编译..."
+              [ -f "buildScript/lib/core.sh" ] && bash buildScript/lib/core.sh || true
             fi
           fi
 
@@ -427,7 +480,7 @@ jobs:
               if ./dynamic_run.sh; then
                 ANY_SUCCESS=true
                 echo ">>>> ✅ 架构 $arch 编译成功！暂存产物中..."
-                find . -type f \( -name "*.apk" -o -name "*.aar" -o -name "*.dmg" -o -name "*.exe" \) ! -path "./temp_staging/*" ! -path "./unified_dist/*" -exec cp {} temp_staging/ \; 2>/dev/null || true
+                find . -type f \( -name "*.apk" -o -name "*.aar" -o -name "*.dmg" -o -name "*.pkg" -o -name "*.exe" \) ! -path "./temp_staging/*" ! -path "./unified_dist/*" -exec cp {} temp_staging/ \; 2>/dev/null || true
               else
                 echo "⚠️ 架构 $arch 编译尝试完毕，检索暂存目录..."
               fi
@@ -443,8 +496,8 @@ jobs:
         run: |
           .\dynamic_run.ps1
 
-      # 13. 顶级双重防护清洗箱（含调试全打印 + 智能兜底 Fallback）
-      - name: Flatten and Clean Output Binaries with Fallback Protection
+      # ⭐ 13. 平台精准对号入座脱壳机：根据 target_platform 严格限制搜刮格式（如 macOS 模式下绝不上抓 .apk）
+      - name: Flatten and Clean Output Binaries via Platform-Aware Python Filter
         shell: python
         run: |
           import os
@@ -452,16 +505,26 @@ jobs:
           import re
 
           project_name = os.environ.get("PROJECT_NAME", "").lower()
+          platform = os.environ.get("TARGET_PLATFORM", "android").lower()
+          
           root_word = project_name.replace("forandroid", "").replace("for_android", "").replace("-android", "").replace("desktop", "").replace("_merge", "")
           root_word_clean = re.sub(r'[-_\s]', '', root_word)
           
           target_dir = "unified_dist"
           os.makedirs(target_dir, exist_ok=True)
 
-          allowed_exts = (".apk", ".aab", ".dmg", ".zip", ".tar.gz", ".aar", ".exe")
+          # 🟢 严格按平台划分白名单后缀
+          platform_ext_map = {
+              "android": (".apk", ".aab", ".aar"),
+              "macos": (".dmg", ".pkg", ".zip", ".tar.gz"),
+              "windows": (".exe", ".msi", ".zip"),
+              "linux": (".appimage", ".deb", ".rpm", ".tar.gz", ".zip")
+          }
+
+          allowed_exts = platform_ext_map.get(platform, (".apk", ".aab", ".dmg", ".zip", ".tar.gz", ".aar", ".exe"))
           ignored_dirs = [".git", ".gradle", "gradle-wrapper", "node_modules", "intermediates", "build-cache", "cache", "tmp", "temp", "mock", "test", "tests", "obj"]
 
-          print(f">>>> 🔍 [纯净指纹过滤器] 核心匹配字根: [{root_word_clean}]")
+          print(f">>>> 🔍 平台精准滤网激活！目标平台: [{platform}], 允许格式: {allowed_exts}, 匹配字根: [{root_word_clean}]")
 
           all_found_files = []
 
@@ -472,10 +535,13 @@ jobs:
                   continue
               for file in files:
                   if file.lower().endswith(allowed_exts):
+                      # 强制防护：如果目标是 macOS/Windows，拉黑历史残留的 apk 文件
+                      if platform in ["macos", "windows", "linux"] and file.lower().endswith((".apk", ".aab")):
+                          continue
                       full_p = os.path.join(root, file)
                       all_found_files.append((full_p, file))
 
-          print(f">>>> 📁 [全盘扫描结果] 在编译环境中找到 {len(all_found_files)} 个潜在二进制文件：")
+          print(f">>>> 📁 [全盘扫描结果] 共发现 {len(all_found_files)} 个符合平台的潜在二进制文件：")
           for full_p, f in all_found_files:
               print(f"   - {full_p}")
 
@@ -488,24 +554,23 @@ jobs:
                   is_match = True
               elif len(root_word_clean) >= 4 and root_word_clean[:4] in file_clean:
                   is_match = True
-              elif any(k in file_clean for k in ["release", "unsigned", "installer", "uberjar"]) and any(k in full_p.lower() for k in ["outputs/apk", "bin/release", "packages", "libs", "temp_staging"]):
+              elif any(k in file_clean for k in ["release", "unsigned", "installer", "desktop", "mac"]) and any(k in full_p.lower() for k in ["outputs/", "bin/", "packages", "libs", "temp_staging", "build/"]):
                   is_match = True
           
               if is_match:
                   dest_path = os.path.join(target_dir, file)
                   shutil.copy2(full_p, dest_path)
-                  print(f"-> [💥 指纹命中] {file} => 写入 => {target_dir}")
+                  print(f"-> [💥 平台指纹命中] {file} => 写入 => {target_dir}")
                   collected_count += 1
 
           if collected_count == 0:
-              print(">>>> ⚠️ 指纹未直接命中文件，触发全量保底搜刮机制（Fallback）...")
+              print(">>>> ⚠️ 指纹未直接命中，触发平台保底搜刮机制（Fallback）...")
               for full_p, file in all_found_files:
-                  if any(k in full_p.lower() for k in ["outputs/apk", "outputs/bundle", "bin/release", "packages", "libs", "temp_staging", "build/"]):
-                      dest_path = os.path.join(target_dir, file)
-                      shutil.copy2(full_p, dest_path)
-                      print(f"-> [🛡️ 保底搜刮成功] {file} => 写入 => {target_dir}")
+                  dest_path = os.path.join(target_dir, file)
+                  shutil.copy2(full_p, dest_path)
+                  print(f"-> [🛡️ 平台保底搜刮成功] {file} => 写入 => {target_dir}")
 
-      # 14. 联动发布（按你的设计：仅当 upload_to_release 为 true 时触发）
+      # 14. 联动发布
       - name: Push and Publish to Public Repo Release Page
         if: ${{ github.event.inputs.upload_to_release == 'true' }}
         env:
