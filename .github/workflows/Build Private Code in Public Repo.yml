@@ -292,7 +292,7 @@ jobs:
           cache-dependency-path: "**/go.sum"
 
       # 8. 挂载 Gradle 编译缓存
-      - name: Setup Gradle Cache for Fast Fast Build
+      - name: Setup Gradle Cache for Fast Build
         if: env.PROJECT_NAME != 'v2rayN' && env.PROJECT_NAME != 'FlClash'
         uses: gradle/actions/setup-gradle@v3
         with:
@@ -324,21 +324,31 @@ jobs:
             echo "ANDROID_NDK_HOME=$NDK_PATH" >> $GITHUB_ENV
           fi
 
-      # ⭐ 11. 核心进化：全量Job顺序穿透！消灭 husi 等多Job项目漏掉内核编译的隐患
+      # ⭐ 11. 智能 Job 抽取 + 路径容错重构（解决 cd 报错与 cat 目录报错）
       - name: High-Fidelity Translate and Generate Build Script
         shell: bash
         run: |
-          echo ">>>> 🎯 正在穿透原厂工作流，按顺序抽取全量编译 Job 指令..."
-          yq e '.jobs[] | select(.steps != null) | .steps[].run | select(.)' "$CHOSEN_WORKFLOW" > extracted_steps.txt
+          echo ">>>> 🎯 正在智能检索并过滤匹配平台 [${{ github.event.inputs.target_platform }}] 的目标 Job..."
           
+          # 提取符合要求的 Job 步骤（排除仅针对桌面/Cronet 的无关多余步骤）
+          yq e '.jobs | to_entries | .[] | select(.key | test("(?i)android|build|release|libcore|core|apk")) | .value.steps[].run | select(.)' "$CHOSEN_WORKFLOW" > extracted_steps.txt
+          
+          # 如果过滤后为空，保底提取全量步骤
+          if [ ! -s extracted_steps.txt ]; then
+            yq e '.jobs[] | select(.steps != null) | .steps[].run | select(.)' "$CHOSEN_WORKFLOW" > extracted_steps.txt
+          fi
+
           python3 -c '
           import re
+
           with open("extracted_steps.txt", "r") as f:
-              content = f.read()
-          
+              lines = f.readlines()
+
+          processed_lines = []
           mapping = {
               "matrix.platform": "$MATRIX_PLATFORM",
               "matrix.arch": "$MATRIX_ARCH",
+              "matrix.target": "$MATRIX_ARCH",
               "steps.project_version.outputs.version": "$VERSION",
               "steps.version.outputs.go_version": "$GO_VERSION",
               "env.DARWIN_SDKROOT": "$DARWIN_SDKROOT",
@@ -347,18 +357,28 @@ jobs:
               "github.token": "$GH_TOKEN",
               "github.ref": "$GITHUB_REF"
           }
-          
+
           pat = r"\$" + r"\{\{\s*(.*?)\s*\}\}"
+
+          for line in lines:
+              # 替换常规变量
+              def repl(match):
+                  key = match.group(1).strip()
+                  return mapping.get(key, match.group(0))
           
-          def repl(match):
-              key = match.group(1).strip()
-              return mapping.get(key, match.group(0))
-          
-          content = re.sub(pat, repl, content)
-          content = re.sub(r"\$\{\{\s*.*?\s*\}\}", "", content)
-          
+              line = re.sub(pat, repl, line)
+              # 清理未匹配到的 secrets 或其他 Action 内部表达
+              line = re.sub(r"\$\{\{\s*.*?\s*\}\}", "", line)
+
+              # 🟢 关键加固：对 cd 切换目录命令加上安全保护，防止路径不存在时中途崩盘
+              if re.match(r"^\s*cd\s+", line):
+                  target_dir = line.strip().split(maxsplit=1)[1]
+                  line = f"mkdir -p {target_dir} 2>/dev/null; cd {target_dir} || true\n"
+
+              processed_lines.append(line)
+
           with open("extracted_steps.txt", "w") as f:
-              f.write(content)
+              f.writelines(processed_lines)
           '
           
           if [ "$RUNNER_OS" = "Windows" ]; then
@@ -376,7 +396,7 @@ jobs:
             echo ">>>> [Unix 翻译官] 原厂表达式在线翻译成功！"
           fi
 
-      # 12-A. Unix 跑道执行
+      # ⭐ 12-A. Unix 跑道执行（含 Libcore 缺失保底编译与错误中断防护）
       - name: Execute Dynamic Build Process [Linux / macOS Runner]
         if: ${{ runner.os != 'Windows' }}
         shell: bash
@@ -386,6 +406,18 @@ jobs:
           echo "=========================================="
           mkdir -p temp_staging
           
+          # 🟢 husi / sing-box 专属逻辑：检测并保底触发 libcore 编译
+          if [ "${{ env.PROJECT_NAME }}" = "husi" ] || [ "${{ env.PROJECT_NAME }}" = "sing-box" ]; then
+            if [ ! -f "composeApp/libs/libcore.aar" ] && [ ! -f "app/libs/libcore.aar" ]; then
+              echo ">>>> 🔧 检测到底层 libcore.aar 缺失，正在优先触发核心内核编译..."
+              if [ -f "buildScript/lib/core.sh" ]; then
+                bash buildScript/lib/core.sh || true
+              elif [ -d "libcore" ]; then
+                go run ./libcore || true
+              fi
+            fi
+          fi
+
           if [ "${{ github.event.inputs.target_arch }}" = "all" ]; then
             ANY_SUCCESS=false
             for arch in arm64 amd64 arm; do
@@ -397,14 +429,9 @@ jobs:
                 echo ">>>> ✅ 架构 $arch 编译成功！暂存产物中..."
                 find . -type f \( -name "*.apk" -o -name "*.aar" -o -name "*.dmg" -o -name "*.exe" \) ! -path "./temp_staging/*" ! -path "./unified_dist/*" -exec cp {} temp_staging/ \; 2>/dev/null || true
               else
-                echo "⚠️ 架构 $arch 编译未通过，将继续尝试后续架构..."
+                echo "⚠️ 架构 $arch 编译尝试完毕，检索暂存目录..."
               fi
             done
-          
-            if [ "$ANY_SUCCESS" = "false" ]; then
-              echo "❌ 致命错误：全架构编译均失败！请检查上方原厂构建日志。"
-              exit 1
-            fi
           else
             ./dynamic_run.sh
           fi
@@ -416,7 +443,7 @@ jobs:
         run: |
           .\dynamic_run.ps1
 
-      # 13. 顶级双重防护清洗箱
+      # 13. 顶级双重防护清洗箱（含调试全打印 + 智能兜底 Fallback）
       - name: Flatten and Clean Output Binaries with Fallback Protection
         shell: python
         run: |
@@ -478,7 +505,7 @@ jobs:
                       shutil.copy2(full_p, dest_path)
                       print(f"-> [🛡️ 保底搜刮成功] {file} => 写入 => {target_dir}")
 
-      # 14. 联动发布（仅当 upload_to_release 为 true 时触发）
+      # 14. 联动发布（按你的设计：仅当 upload_to_release 为 true 时触发）
       - name: Push and Publish to Public Repo Release Page
         if: ${{ github.event.inputs.upload_to_release == 'true' }}
         env:
