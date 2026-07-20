@@ -144,7 +144,7 @@ jobs:
           ref: ${{ env.TARGET_BRANCH }}
           fetch-depth: 0
 
-      # 3. 剧本锁定与环境参数抓取（含 Zig 探针）
+      # 3. 剧本锁定与环境参数抓取
       - name: Select Compilation Workflow and Extract Versions
         id: extract_env
         shell: bash
@@ -239,7 +239,6 @@ jobs:
             FROM_WF_DOTNET=$(grep -oP 'dotnet-version:\s*[\x27\x22]?\K[0-9\.]+' "$CHOSEN_WF" 2>/dev/null | head -n 1 || true)
             [ ! -z "$FROM_WF_DOTNET" ] && DOTNET_VER="$FROM_WF_DOTNET"
 
-            # 🟢 探测 Zig 深层依赖与版本
             if grep -q "setup-zig" "$CHOSEN_WF"; then
               ZIG_V=$(grep -A 3 "setup-zig" "$CHOSEN_WF" | grep "version:" | head -n 1 | awk '{print $2}' | tr -d "'\"" || true)
               [ -z "$ZIG_V" ] && ZIG_V="0.13.0"
@@ -268,7 +267,7 @@ jobs:
           git config --global url."https://${{ secrets.PAT_TOKEN }}@github.com/".insteadOf "https://github.com/"
           git submodule update --init --recursive
 
-      # ⭐ 5. 换装官方原生 setup-zig Action，彻底杜绝 403 / 404 及 tar 解压错误
+      # 5. 配置 Zig 环境
       - name: Set up Zig Toolchain
         if: env.HAS_ZIG == 'true'
         uses: mlugg/setup-zig@v2
@@ -293,7 +292,7 @@ jobs:
           cache-dependency-path: "**/go.sum"
 
       # 8. 挂载 Gradle 编译缓存
-      - name: Setup Gradle Cache for Fast Build
+      - name: Setup Gradle Cache for Fast Fast Build
         if: env.PROJECT_NAME != 'v2rayN' && env.PROJECT_NAME != 'FlClash'
         uses: gradle/actions/setup-gradle@v3
         with:
@@ -315,7 +314,7 @@ jobs:
 
       # 10. 挂载基础本地 Android 映射属性
       - name: Prepare Local Properties
-        if: env.PROJECT_NAME != 'v2rayN' && env.PROJECT_NAME != 'husi'
+        if: env.PROJECT_NAME != 'v2rayN'
         shell: bash
         run: |
           echo "sdk.dir=$ANDROID_HOME" > local.properties
@@ -325,24 +324,12 @@ jobs:
             echo "ANDROID_NDK_HOME=$NDK_PATH" >> $GITHUB_ENV
           fi
 
-      # 11. 核心高保真指令抽取与 Python 动态宏热修复官
+      # ⭐ 11. 核心进化：全量Job顺序穿透！消灭 husi 等多Job项目漏掉内核编译的隐患
       - name: High-Fidelity Translate and Generate Build Script
         shell: bash
         run: |
-          JOB_KEYS=$(yq e '.jobs | keys | .[]' "$CHOSEN_WORKFLOW")
-          TARGET_JOB=""
-          MODE="${{ github.event.inputs.build_mode }}"
-          
-          for jk in $JOB_KEYS; do
-            jk_lower=$(echo "$jk" | tr '[:upper:]' '[:lower:]')
-            if [[ "$jk_lower" == *"$MODE"* || "$jk_lower" == *"build"* || "$jk_lower" == *"release"* || "$jk_lower" == *"apk"* || "$jk_lower" == *"compile"* ]]; then
-              TARGET_JOB="$jk"; break
-            fi
-          done
-          [ -z "$TARGET_JOB" ] && TARGET_JOB=$(echo "$JOB_KEYS" | head -n 1)
-          
-          echo ">>>> 🎯 统一智能：已精准锁定原厂编译核心 Job: [$TARGET_JOB]"
-          yq e ".jobs.\"$TARGET_JOB\".steps[].run | select(.)" "$CHOSEN_WORKFLOW" > extracted_steps.txt
+          echo ">>>> 🎯 正在穿透原厂工作流，按顺序抽取全量编译 Job 指令..."
+          yq e '.jobs[] | select(.steps != null) | .steps[].run | select(.)' "$CHOSEN_WORKFLOW" > extracted_steps.txt
           
           python3 -c '
           import re
@@ -397,11 +384,27 @@ jobs:
           echo "=========================================="
           echo "🚀 正在使用公开库免费算力，动态重放原厂打包指令..."
           echo "=========================================="
+          mkdir -p temp_staging
+          
           if [ "${{ github.event.inputs.target_arch }}" = "all" ]; then
+            ANY_SUCCESS=false
             for arch in arm64 amd64 arm; do
               export MATRIX_ARCH=$arch
-              ./dynamic_run.sh
+              echo ">>>> 🔄 [矩阵编译中] 当前目标架构: $arch"
+          
+              if ./dynamic_run.sh; then
+                ANY_SUCCESS=true
+                echo ">>>> ✅ 架构 $arch 编译成功！暂存产物中..."
+                find . -type f \( -name "*.apk" -o -name "*.aar" -o -name "*.dmg" -o -name "*.exe" \) ! -path "./temp_staging/*" ! -path "./unified_dist/*" -exec cp {} temp_staging/ \; 2>/dev/null || true
+              else
+                echo "⚠️ 架构 $arch 编译未通过，将继续尝试后续架构..."
+              fi
             done
+          
+            if [ "$ANY_SUCCESS" = "false" ]; then
+              echo "❌ 致命错误：全架构编译均失败！请检查上方原厂构建日志。"
+              exit 1
+            fi
           else
             ./dynamic_run.sh
           fi
@@ -413,8 +416,8 @@ jobs:
         run: |
           .\dynamic_run.ps1
 
-      # 13. 智能指纹脱壳过滤器
-      - name: Flatten and Clean Output Binaries via Fuzzy Python Filter
+      # 13. 顶级双重防护清洗箱
+      - name: Flatten and Clean Output Binaries with Fallback Protection
         shell: python
         run: |
           import os
@@ -431,36 +434,51 @@ jobs:
           allowed_exts = (".apk", ".aab", ".dmg", ".zip", ".tar.gz", ".aar", ".exe")
           ignored_dirs = [".git", ".gradle", "gradle-wrapper", "node_modules", "intermediates", "build-cache", "cache", "tmp", "temp", "mock", "test", "tests", "obj"]
 
-          print(f">>>> 🔍 纯净指纹除毒滤网已启动！核心匹配字根: [{root_word_clean}]")
+          print(f">>>> 🔍 [纯净指纹过滤器] 核心匹配字根: [{root_word_clean}]")
+
+          all_found_files = []
 
           for root, dirs, files in os.walk("."):
               if any(ignored in root.replace("\\", "/").split("/") for ignored in ignored_dirs):
                   continue
               if target_dir in root:
                   continue
-          
               for file in files:
-                  file_lower = file.lower()
-                  if not file_lower.endswith(allowed_exts):
-                      continue
-          
-                  file_clean = re.sub(r'[-_\s]', '', file_lower)
-                  is_match = False
-          
-                  if root_word_clean in file_clean:
-                      is_match = True
-                  elif len(root_word_clean) >= 4 and root_word_clean[:4] in file_clean:
-                      is_match = True
-                  elif any(k in file_clean for k in ["release", "unsigned", "installer", "uberjar"]) and any(k in root.lower() for k in ["outputs/apk", "bin/release", "packages", "libs"]):
-                      is_match = True
-          
-                  if is_match:
-                      src_path = os.path.join(root, file)
-                      dest_path = os.path.join(target_dir, file)
-                      print(f"-> [💥 模糊指纹命中] 成功抽取纯净产物: {src_path} => 归档 => {dest_path}")
-                      shutil.copy2(src_path, dest_path)
+                  if file.lower().endswith(allowed_exts):
+                      full_p = os.path.join(root, file)
+                      all_found_files.append((full_p, file))
 
-      # 14. 联动发布（含真实版本号刺探与 Tag 注入）
+          print(f">>>> 📁 [全盘扫描结果] 在编译环境中找到 {len(all_found_files)} 个潜在二进制文件：")
+          for full_p, f in all_found_files:
+              print(f"   - {full_p}")
+
+          collected_count = 0
+          for full_p, file in all_found_files:
+              file_clean = re.sub(r'[-_\s]', '', file.lower())
+              is_match = False
+          
+              if root_word_clean in file_clean:
+                  is_match = True
+              elif len(root_word_clean) >= 4 and root_word_clean[:4] in file_clean:
+                  is_match = True
+              elif any(k in file_clean for k in ["release", "unsigned", "installer", "uberjar"]) and any(k in full_p.lower() for k in ["outputs/apk", "bin/release", "packages", "libs", "temp_staging"]):
+                  is_match = True
+          
+              if is_match:
+                  dest_path = os.path.join(target_dir, file)
+                  shutil.copy2(full_p, dest_path)
+                  print(f"-> [💥 指纹命中] {file} => 写入 => {target_dir}")
+                  collected_count += 1
+
+          if collected_count == 0:
+              print(">>>> ⚠️ 指纹未直接命中文件，触发全量保底搜刮机制（Fallback）...")
+              for full_p, file in all_found_files:
+                  if any(k in full_p.lower() for k in ["outputs/apk", "outputs/bundle", "bin/release", "packages", "libs", "temp_staging", "build/"]):
+                      dest_path = os.path.join(target_dir, file)
+                      shutil.copy2(full_p, dest_path)
+                      print(f"-> [🛡️ 保底搜刮成功] {file} => 写入 => {target_dir}")
+
+      # 14. 联动发布（仅当 upload_to_release 为 true 时触发）
       - name: Push and Publish to Public Repo Release Page
         if: ${{ github.event.inputs.upload_to_release == 'true' }}
         env:
@@ -489,12 +507,12 @@ jobs:
             fi
           
             TAG_NAME="${{ env.PROJECT_NAME }}-${CLEAN_BRANCH}-v${VERSION}"
-            echo ">>>> 🚀 强制指向！已成功根据产物版本号生成精炼 Tag 名: $TAG_NAME"
+            echo ">>>> 🚀 生成 Release Tag: $TAG_NAME"
           
             gh release create "$TAG_NAME" unified_dist/* --repo "${{ github.repository }}" --title "$TAG_NAME" --notes "Automated smart build from private upstream: ${{ env.TARGET_REPO }} [${{ env.TARGET_BRANCH }}]" --prerelease
-            echo ">>>> 🎉 史诗级通关！发布大功告成！直接刷新你的免费公开仓库 Release 栏即可！"
+            echo ">>>> 🎉 全线发布成功！"
           else
-            echo "⚠️ 未扫描到符合项目指纹的纯净编译产物，跳过 Release 发布。"
+            echo "⚠️ 未找到任何有效编译产物，跳过 Release 发布。"
           fi
 
       # 15. 备份层：Artifacts 平铺归档
@@ -502,5 +520,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.PROJECT_NAME }}--${{ env.TARGET_BRANCH }}--${{ github.event.inputs.target_platform }}--${{ github.event.inputs.target_arch }}--Artifacts
-          path: unified_dist/*
+          path: unified_dist
           if-no-files-found: warn
