@@ -144,7 +144,7 @@ jobs:
           ref: ${{ env.TARGET_BRANCH }}
           fetch-depth: 0
 
-      # 3. 剧本锁定与环境参数抓取
+      # 3. 剧本锁定与环境参数抓取（含 Zig 探针）
       - name: Select Compilation Workflow and Extract Versions
         id: extract_env
         shell: bash
@@ -238,6 +238,14 @@ jobs:
             [ ! -z "$FROM_WF_JAVA" ] && JAVA_VER="$FROM_WF_JAVA"
             FROM_WF_DOTNET=$(grep -oP 'dotnet-version:\s*[\x27\x22]?\K[0-9\.]+' "$CHOSEN_WF" 2>/dev/null | head -n 1 || true)
             [ ! -z "$FROM_WF_DOTNET" ] && DOTNET_VER="$FROM_WF_DOTNET"
+
+            # 🟢 探测 Zig 深层依赖与版本
+            if grep -q "setup-zig" "$CHOSEN_WF"; then
+              ZIG_V=$(grep -A 3 "setup-zig" "$CHOSEN_WF" | grep "version:" | head -n 1 | awk '{print $2}' | tr -d "'\"" || true)
+              [ -z "$ZIG_V" ] && ZIG_V="0.13.0"
+              echo "HAS_ZIG=true" >> $GITHUB_ENV
+              echo "DYNAMIC_ZIG=$ZIG_V" >> $GITHUB_ENV
+            fi
           else
             echo "❌ 致命错误：无论通过地图还是特征扫描，均无法找到目标编译流文件！"
             exit 1
@@ -260,19 +268,12 @@ jobs:
           git config --global url."https://${{ secrets.PAT_TOKEN }}@github.com/".insteadOf "https://github.com/"
           git submodule update --init --recursive
 
-      # 5. 动态补全特殊交叉编译依赖
-      - name: Dynamic Inject Specialized Toolchain (Zig Engine)
-        shell: bash
-        run: |
-          if [ -f "$CHOSEN_WORKFLOW" ] && grep -q "setup-zig" "$CHOSEN_WORKFLOW"; then
-            ZIG_VER=$(grep -A 3 "setup-zig" "$CHOSEN_WORKFLOW" | grep "version:" | awk '{print $2}' | tr -d "'\"" || true)
-            [ -z "$ZIG_VER" ] && ZIG_VER="0.16.0"
-            echo ">>>> 🔧 检测到原厂深层依赖 Zig ${ZIG_VER}，正在极速架设工具链..."
-            curl -L "https://ziglang.org/download/${ZIG_VER}/zig-linux-x86_64-${ZIG_VER}.tar.xz" -o zig.tar.xz || curl -L "https://ziglang.org/builds/zig-linux-x86_64-${ZIG_VER}.tar.xz" -o zig.tar.xz
-            tar -xf zig.tar.xz
-            sudo mv zig-linux-x86_64-* /opt/zig && sudo ln -s /opt/zig/zig /usr/local/bin/zig
-            zig version
-          fi
+      # ⭐ 5. 换装官方原生 setup-zig Action，彻底杜绝 403 / 404 及 tar 解压错误
+      - name: Set up Zig Toolchain
+        if: env.HAS_ZIG == 'true'
+        uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.DYNAMIC_ZIG }}
 
       # 6. 配置 Java 环境
       - name: Set up Java Runtime
@@ -412,7 +413,7 @@ jobs:
         run: |
           .\dynamic_run.ps1
 
-      # 13. 智能指纹脱壳过滤器（提取最终纯净产物）
+      # 13. 智能指纹脱壳过滤器
       - name: Flatten and Clean Output Binaries via Fuzzy Python Filter
         shell: python
         run: |
@@ -459,7 +460,7 @@ jobs:
                       print(f"-> [💥 模糊指纹命中] 成功抽取纯净产物: {src_path} => 归档 => {dest_path}")
                       shutil.copy2(src_path, dest_path)
 
-      # ⭐ 14. 联动发布（魔改加固版：全自动刺探已编译文件名，高保真抽离真实版本号注入 Tag 名）
+      # 14. 联动发布（含真实版本号刺探与 Tag 注入）
       - name: Push and Publish to Public Repo Release Page
         if: ${{ github.event.inputs.upload_to_release == 'true' }}
         env:
@@ -469,7 +470,6 @@ jobs:
           if [ -d "unified_dist" ] && [ "$(ls -A unified_dist 2>/dev/null)" ]; then
             CLEAN_BRANCH=$(echo "${{ env.TARGET_BRANCH }}" | tr '/' '-')
           
-            # 🟢 终极进化：用 Python 刺探 unified_dist 里最纯正的 X.Y.Z[-修饰符] 安装包指纹，自动抹除末尾架构
             VERSION=$(python3 -c '
           import os, re
           files = os.listdir("unified_dist")
@@ -484,7 +484,6 @@ jobs:
           print(version)
           ')
           
-            # 兜底机制：如果没抠出版本号，依然用 GitHub 构建序列号顶替
             if [ -z "$VERSION" ]; then
               VERSION="${{ github.run_number }}"
             fi
