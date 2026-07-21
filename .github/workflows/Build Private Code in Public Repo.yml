@@ -40,7 +40,6 @@ on:
         default: ''
         type: string
 
-      # ⭐ 精简：移除了 build.yaml 选项，保留极简的标准 build
       build_mode:
         description: '🛠️ 选择【编译流剧本】(自适应匹配原厂发布模式)'
         required: true
@@ -156,7 +155,7 @@ jobs:
           ref: ${{ env.TARGET_BRANCH }}
           fetch-depth: 0
 
-      # 3. 剧本锁定与环境参数抓取
+      # 3. 剧本锁定与环境参数抓取（优化：增强对 FlClash Flutter 版本提取）
       - name: Select Compilation Workflow and Extract Versions
         id: extract_env
         shell: bash
@@ -164,6 +163,7 @@ jobs:
           GO_VER="1.23.x"
           JAVA_VER="17"
           DOTNET_VER="8.0.x"
+          FLUTTER_VER="3.44.4"
           CHOSEN_WF=""
           
           PROJECT="${{ env.PROJECT_NAME }}"
@@ -172,7 +172,6 @@ jobs:
           
           echo ">>>> 📡 正在加载原厂核心地图进行强匹配路由..."
           
-          # 🟢 1. 智能匹配：选 build 时自动优先侦测 build.yaml / build.yml
           if [ "$MODE" = "build" ]; then
             if [ -f ".github/workflows/build.yaml" ]; then
               CHOSEN_WF=".github/workflows/build.yaml"
@@ -181,7 +180,6 @@ jobs:
             fi
           fi
 
-          # 🟢 2. 地图路由强驱动
           if [ -z "$CHOSEN_WF" ]; then
             case "$PROJECT" in
               "FlClash")
@@ -236,7 +234,7 @@ jobs:
               "Exclave")
                 if [ "$MODE" = "debug" ] && [ -f ".github/workflows/debug.yml" ]; then
                   CHOSEN_WF=".github/workflows/debug.yml"
-                elif [ -f ".github/workflows/release.yml" ]; then
+                elif [ -f ".github/workflows/release.yml" ]; me
                   CHOSEN_WF=".github/workflows/release.yml"
                 elif [ -f ".github/workflows/build.yaml" ]; then
                   CHOSEN_WF=".github/workflows/build.yaml"
@@ -245,7 +243,6 @@ jobs:
             esac
           fi
           
-          # 🟢 3. 自动化特征扫描兜底
           if [ -z "$CHOSEN_WF" ] || [ ! -f "$CHOSEN_WF" ]; then
             echo ">>>> ⚠️ 当前项目未命中硬编码地图，正在执行全自动化特征层扫描..."
             if [ -d ".github/workflows" ]; then
@@ -286,6 +283,10 @@ jobs:
             FROM_WF_DOTNET=$(grep -oP 'dotnet-version:\s*[\x27\x22]?\K[0-9\.]+' "$CHOSEN_WF" 2>/dev/null | head -n 1 || true)
             [ ! -z "$FROM_WF_DOTNET" ] && DOTNET_VER="$FROM_WF_DOTNET"
 
+            # 🟢 抓取原厂指定的 Flutter 版本
+            FROM_WF_FLUTTER=$(grep -oP 'FLUTTER_VERSION:\s*[\x27\x22]?\K[0-9\.]+' "$CHOSEN_WF" 2>/dev/null | head -n 1 || true)
+            [ ! -z "$FROM_WF_FLUTTER" ] && FLUTTER_VER="$FROM_WF_FLUTTER"
+
             if grep -q "setup-zig" "$CHOSEN_WF"; then
               ZIG_V=$(grep -A 3 "setup-zig" "$CHOSEN_WF" | grep "version:" | head -n 1 | awk '{print $2}' | tr -d "'\"" || true)
               [ -z "$ZIG_V" ] && ZIG_V="0.13.0"
@@ -302,10 +303,11 @@ jobs:
             [ ! -z "$GO_MOD_V" ] && GO_VER="${GO_MOD_V}.x"
           fi
           
-          echo ">>>> [智能匹配成功] DYNAMIC 环境参数解锁：Go=$GO_VER, Java=$JAVA_VER, .NET=$DOTNET_VER"
+          echo ">>>> [智能匹配成功] DYNAMIC 环境参数解锁：Go=$GO_VER, Java=$JAVA_VER, .NET=$DOTNET_VER, Flutter=$FLUTTER_VER"
           echo "DYNAMIC_GO=$GO_VER" >> $GITHUB_ENV
           echo "DYNAMIC_JAVA=$JAVA_VER" >> $GITHUB_ENV
           echo "DYNAMIC_DOTNET=$DOTNET_VER" >> $GITHUB_ENV
+          echo "DYNAMIC_FLUTTER=$FLUTTER_VER" >> $GITHUB_ENV
 
       # 4. 递归拉取底层子模块
       - name: Clone Submodules
@@ -329,14 +331,14 @@ jobs:
           java-version: ${{ env.DYNAMIC_JAVA }}
           distribution: 'temurin'
 
-      # 7. 配置 Go 环境
+      # 7. 配置 Go 环境（支持 FlClash 编译 Go 内核）
       - name: Set up Go Runtime
-        if: env.PROJECT_NAME == 'Exclave' || env.PROJECT_NAME == 'NekoBoxForAndroid' || env.PROJECT_NAME == 'husi' || env.PROJECT_NAME == 'ClashMetaForAndroid' || env.PROJECT_NAME == 'FlClash'
+        if: env.PROJECT_NAME == 'Exclave' || env.PROJECT_NAME == 'NekoBoxForAndroid' || env.PROJECT_NAME == 'husi' || env.PROJECT_NAME == 'ClashMetaForAndroid' || env.PROJECT_NAME == 'FlClash' || env.PROJECT_NAME == 'sing-box' || env.PROJECT_NAME == 'mihomo' || env.PROJECT_NAME == 'Xray'
         uses: actions/setup-go@v5
         with:
           go-version: ${{ env.DYNAMIC_GO }}
           cache: true
-          cache-dependency-path: "**/go.sum"
+          cache-dependency-path: "**/*go.sum"
 
       # 8. 挂载 Gradle 编译缓存
       - name: Setup Gradle Cache for Fast Build
@@ -356,6 +358,7 @@ jobs:
         if: env.PROJECT_NAME == 'FlClash'
         uses: subosito/flutter-action@v2
         with:
+          flutter-version: ${{ env.DYNAMIC_FLUTTER }}
           channel: 'stable'
           cache: true
 
@@ -375,6 +378,8 @@ jobs:
       - name: High-Fidelity Translate and Generate Build Script
         shell: bash
         run: |
+          python3 -m pip install pyyaml --quiet 2>/dev/null || pip3 install pyyaml --quiet 2>/dev/null || true
+          
           python3 << 'EOF'
           import yaml, re, os
 
@@ -424,14 +429,13 @@ jobs:
           
                   step_if = str(step.get("if", "")).lower()
           
-                  # 平台隔离过滤
-                  if "matrix.platform == 'macos'" in step_if or 'matrix.platform == "macos"' in step_if or "matrix.platform=='macos'" in step_if:
+                  if "matrix.platform == 'macos'" in step_if or 'matrix.platform == "macos"' in step_if or "matrix.platform=='macos'" in step_if or "matrix.platform,'macos'" in step_if:
                       if target_platform != "macos":
                           continue
-                  elif "matrix.platform == 'windows'" in step_if or 'matrix.platform == "windows"' in step_if or "matrix.platform=='windows'" in step_if:
+                  elif "matrix.platform == 'windows'" in step_if or 'matrix.platform == "windows"' in step_if or "matrix.platform=='windows'" in step_if or "matrix.platform,'windows'" in step_if:
                       if target_platform != "windows":
                           continue
-                  elif "matrix.platform == 'android'" in step_if or 'matrix.platform == "android"' in step_if or "matrix.platform=='android'" in step_if:
+                  elif "matrix.platform == 'android'" in step_if or 'matrix.platform == "android"' in step_if or "matrix.platform=='android'" in step_if or "matrix.platform,'android'" in step_if:
                       if target_platform != "android":
                           continue
           
@@ -450,7 +454,6 @@ jobs:
           
                       extracted_cmds.append(line)
 
-                      # 动态环境变量同步注入
                       if ">> $GITHUB_ENV" in line or ">> \"$GITHUB_ENV\"" in line:
                           extracted_cmds.append("source $GITHUB_ENV 2>/dev/null || true")
 
@@ -459,14 +462,14 @@ jobs:
           EOF
           
           if [ "$RUNNER_OS" = "Windows" ]; then
-            echo -e "export GITHUB_ENV=\$(mktemp)\nexport GITHUB_OUTPUT=\$(mktemp)\n\$MATRIX_PLATFORM='${{ github.event.inputs.target_platform }}'\n\$MATRIX_ARCH='${{ github.event.inputs.target_arch }}'\n\$GH_TOKEN='${{ secrets.PAT_TOKEN }}'\n" > dynamic_run.ps1
+            echo -e "export GITHUB_ENV=\$(mktemp)\nexport GITHUB_OUTPUT=\$(mktemp)\nexport IS_STABLE='false'\n\$MATRIX_PLATFORM='${{ github.event.inputs.target_platform }}'\n\$MATRIX_ARCH='${{ github.event.inputs.target_arch }}'\n\$GH_TOKEN='${{ secrets.PAT_TOKEN }}'\n" > dynamic_run.ps1
             cat extracted_steps.txt >> dynamic_run.ps1
             echo ">>>> [Windows 翻译官] 原厂表达式在线翻译成功！"
           else
             if [ "${{ github.event.inputs.target_arch }}" = "all" ]; then
-              echo -e "#!/bin/bash\nexport GITHUB_ENV=\$(mktemp)\nexport GITHUB_OUTPUT=\$(mktemp)\nexport CGO_ENABLED=1\nexport GRADLE_OPTS=\"-Xmx4g\"\nexport MATRIX_PLATFORM='${{ github.event.inputs.target_platform }}'\nexport GH_TOKEN='${{ secrets.PAT_TOKEN }}'\nexport GITHUB_REF='refs/heads/${{ env.TARGET_BRANCH }}'\nexport TARGET_BRANCH='${{ env.TARGET_BRANCH }}'\n" > dynamic_run.sh
+              echo -e "#!/bin/bash\nexport GITHUB_ENV=\$(mktemp)\nexport GITHUB_OUTPUT=\$(mktemp)\nexport CGO_ENABLED=1\nexport IS_STABLE='false'\nexport GRADLE_OPTS=\"-Xmx4g\"\nexport MATRIX_PLATFORM='${{ github.event.inputs.target_platform }}'\nexport GH_TOKEN='${{ secrets.PAT_TOKEN }}'\nexport GITHUB_REF='refs/heads/${{ env.TARGET_BRANCH }}'\nexport TARGET_BRANCH='${{ env.TARGET_BRANCH }}'\n" > dynamic_run.sh
             else
-              echo -e "#!/bin/bash\nexport GITHUB_ENV=\$(mktemp)\nexport GITHUB_OUTPUT=\$(mktemp)\nexport CGO_ENABLED=1\nexport GRADLE_OPTS=\"-Xmx4g\"\nexport MATRIX_PLATFORM='${{ github.event.inputs.target_platform }}'\nexport MATRIX_ARCH='${{ github.event.inputs.target_arch }}'\nexport GH_TOKEN='${{ secrets.PAT_TOKEN }}'\nexport GITHUB_REF='refs/heads/${{ env.TARGET_BRANCH }}'\nexport TARGET_BRANCH='${{ env.TARGET_BRANCH }}'\n" > dynamic_run.sh
+              echo -e "#!/bin/bash\nexport GITHUB_ENV=\$(mktemp)\nexport GITHUB_OUTPUT=\$(mktemp)\nexport CGO_ENABLED=1\nexport IS_STABLE='false'\nexport GRADLE_OPTS=\"-Xmx4g\"\nexport MATRIX_PLATFORM='${{ github.event.inputs.target_platform }}'\nexport MATRIX_ARCH='${{ github.event.inputs.target_arch }}'\nexport GH_TOKEN='${{ secrets.PAT_TOKEN }}'\nexport GITHUB_REF='refs/heads/${{ env.TARGET_BRANCH }}'\nexport TARGET_BRANCH='${{ env.TARGET_BRANCH }}'\n" > dynamic_run.sh
             fi
             cat extracted_steps.txt >> dynamic_run.sh
             chmod +x dynamic_run.sh
@@ -516,7 +519,7 @@ jobs:
         run: |
           .\dynamic_run.ps1
 
-      # 13. 平台精准对号入座脱壳机
+      # ⭐ 13. 平台精准对号入座脱壳机（针对 FlClash 增加对 ./dist 出货槽的强力探测）
       - name: Flatten and Clean Output Binaries via Platform-Aware Python Filter
         shell: python
         run: |
@@ -572,7 +575,7 @@ jobs:
                   is_match = True
               elif len(root_word_clean) >= 4 and root_word_clean[:4] in file_clean:
                   is_match = True
-              elif any(k in file_clean for k in ["release", "unsigned", "installer", "desktop", "mac"]) and any(k in full_p.lower() for k in ["outputs/", "bin/", "packages", "libs", "temp_staging", "build/"]):
+              elif any(k in file_clean for k in ["release", "unsigned", "installer", "desktop", "mac"]) and any(k in full_p.lower() for k in ["outputs/", "bin/", "dist/", "packages", "libs", "temp_staging", "build/"]):
                   is_match = True
           
               if is_match:
