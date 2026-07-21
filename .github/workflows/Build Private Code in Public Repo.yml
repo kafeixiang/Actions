@@ -155,7 +155,7 @@ jobs:
           ref: ${{ env.TARGET_BRANCH }}
           fetch-depth: 0
 
-      # 3. 剧本锁定与环境参数抓取（⭐ 已修正判断语法）
+      # 3. 剧本锁定与环境参数抓取
       - name: Select Compilation Workflow and Extract Versions
         id: extract_env
         shell: bash
@@ -373,25 +373,24 @@ jobs:
             echo "ANDROID_NDK_HOME=$NDK_PATH" >> $GITHUB_ENV
           fi
 
-      # 11. Heredoc 强隔离指令抽取与 Python 动态宏热修复官
+      # ⭐ 11. 升级：利用系统原生 yq 输出 JSON，Python 使用内置 json 模块，彻底摆脱 PyYAML / pip 依赖
       - name: High-Fidelity Translate and Generate Build Script
         shell: bash
         run: |
-          python3 -m pip install pyyaml --quiet 2>/dev/null || pip3 install pyyaml --quiet 2>/dev/null || true
+          yq eval -o=json '.' "$CHOSEN_WORKFLOW" > workflow.json
           
           python3 << 'EOF'
-          import yaml, re, os
+          import json, re, os
 
-          chosen_wf = os.environ.get("CHOSEN_WORKFLOW", "")
           target_platform = os.environ.get("TARGET_PLATFORM", "android").lower()
           target_branch = os.environ.get("TARGET_BRANCH", "dev")
 
-          if not os.path.exists(chosen_wf):
-              print(f"❌ 剧本文件不存在: {chosen_wf}")
+          if not os.path.exists("workflow.json"):
+              print("❌ JSON 转换失败！")
               exit(1)
 
-          with open(chosen_wf, "r", encoding="utf-8") as f:
-              wf = yaml.safe_load(f)
+          with open("workflow.json", "r", encoding="utf-8") as f:
+              wf = json.load(f)
 
           jobs = wf.get("jobs", {})
           extracted_cmds = []
