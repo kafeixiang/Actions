@@ -155,7 +155,7 @@ jobs:
           ref: ${{ env.TARGET_BRANCH }}
           fetch-depth: 0
 
-      # 3. 剧本锁定与环境参数抓取（优化：增强对 FlClash Flutter 版本提取）
+      # 3. 剧本锁定与环境参数抓取（⭐ 已修正判断语法）
       - name: Select Compilation Workflow and Extract Versions
         id: extract_env
         shell: bash
@@ -234,7 +234,7 @@ jobs:
               "Exclave")
                 if [ "$MODE" = "debug" ] && [ -f ".github/workflows/debug.yml" ]; then
                   CHOSEN_WF=".github/workflows/debug.yml"
-                elif [ -f ".github/workflows/release.yml" ]; me
+                elif [ -f ".github/workflows/release.yml" ]; then
                   CHOSEN_WF=".github/workflows/release.yml"
                 elif [ -f ".github/workflows/build.yaml" ]; then
                   CHOSEN_WF=".github/workflows/build.yaml"
@@ -283,7 +283,6 @@ jobs:
             FROM_WF_DOTNET=$(grep -oP 'dotnet-version:\s*[\x27\x22]?\K[0-9\.]+' "$CHOSEN_WF" 2>/dev/null | head -n 1 || true)
             [ ! -z "$FROM_WF_DOTNET" ] && DOTNET_VER="$FROM_WF_DOTNET"
 
-            # 🟢 抓取原厂指定的 Flutter 版本
             FROM_WF_FLUTTER=$(grep -oP 'FLUTTER_VERSION:\s*[\x27\x22]?\K[0-9\.]+' "$CHOSEN_WF" 2>/dev/null | head -n 1 || true)
             [ ! -z "$FROM_WF_FLUTTER" ] && FLUTTER_VER="$FROM_WF_FLUTTER"
 
@@ -331,7 +330,7 @@ jobs:
           java-version: ${{ env.DYNAMIC_JAVA }}
           distribution: 'temurin'
 
-      # 7. 配置 Go 环境（支持 FlClash 编译 Go 内核）
+      # 7. 配置 Go 环境
       - name: Set up Go Runtime
         if: env.PROJECT_NAME == 'Exclave' || env.PROJECT_NAME == 'NekoBoxForAndroid' || env.PROJECT_NAME == 'husi' || env.PROJECT_NAME == 'ClashMetaForAndroid' || env.PROJECT_NAME == 'FlClash' || env.PROJECT_NAME == 'sing-box' || env.PROJECT_NAME == 'mihomo' || env.PROJECT_NAME == 'Xray'
         uses: actions/setup-go@v5
@@ -519,7 +518,7 @@ jobs:
         run: |
           .\dynamic_run.ps1
 
-      # ⭐ 13. 平台精准对号入座脱壳机（针对 FlClash 增加对 ./dist 出货槽的强力探测）
+      # 13. 平台精准对号入座脱壳机
       - name: Flatten and Clean Output Binaries via Platform-Aware Python Filter
         shell: python
         run: |
