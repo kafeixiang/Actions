@@ -87,7 +87,6 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
 
 jobs:
-  # ⭐ 优化 1：算力精准路由！针对 husi 交叉编译 macOS/Windows 依然锁定 Ubuntu 跑道
   setup_matrix:
     runs-on: ubuntu-latest
     outputs:
@@ -155,7 +154,7 @@ jobs:
           ref: ${{ env.TARGET_BRANCH }}
           fetch-depth: 0
 
-      # ⭐ 3. 剧本锁定与环境参数抓取（完美咬合 husi 桌面端工作流）
+      # 3. 剧本锁定与环境参数抓取
       - name: Select Compilation Workflow and Extract Versions
         id: extract_env
         shell: bash
@@ -336,7 +335,7 @@ jobs:
           channel: 'stable'
           cache: true
 
-      # 10. 挂载 Android 本地映射属性（非 Android 编译自动跳过）
+      # 10. 挂载 Android 本地映射属性
       - name: Prepare Local Properties
         if: env.PROJECT_NAME != 'v2rayN' && env.TARGET_PLATFORM == 'android'
         shell: bash
@@ -348,11 +347,11 @@ jobs:
             echo "ANDROID_NDK_HOME=$NDK_PATH" >> $GITHUB_ENV
           fi
 
-      # ⭐ 11. 核心改进：Python 智能提取 + 步骤级 if 过滤，完美剥离对应平台的编译步骤
+      # ⭐ 11. 核心极速修复：改用 Heredoc (<< 'EOF') 强制隔离 Python 脚本，彻底杜绝单引号括号引起的 Bash 崩溃
       - name: High-Fidelity Translate and Generate Build Script
         shell: bash
         run: |
-          python3 -c '
+          python3 << 'EOF'
           import yaml, re, os
 
           chosen_wf = os.environ.get("CHOSEN_WORKFLOW", "")
@@ -401,14 +400,14 @@ jobs:
           
                   step_if = str(step.get("if", "")).lower()
           
-                  # 🟢 平台过滤器：排除不属于当前 target_platform 的步骤
-                  if "matrix.platform == 'macos'" in step_if or "matrix.platform == \"macos\"" in step_if:
+                  # 平台隔离过滤
+                  if "matrix.platform == 'macos'" in step_if or 'matrix.platform == "macos"' in step_if or "matrix.platform=='macos'" in step_if:
                       if target_platform != "macos":
                           continue
-                  elif "matrix.platform == 'windows'" in step_if or "matrix.platform == \"windows\"" in step_if:
+                  elif "matrix.platform == 'windows'" in step_if or 'matrix.platform == "windows"' in step_if or "matrix.platform=='windows'" in step_if:
                       if target_platform != "windows":
                           continue
-                  elif "matrix.platform == 'android'" in step_if or "matrix.platform == \"android\"" in step_if:
+                  elif "matrix.platform == 'android'" in step_if or 'matrix.platform == "android"' in step_if or "matrix.platform=='android'" in step_if:
                       if target_platform != "android":
                           continue
           
@@ -425,35 +424,32 @@ jobs:
                           tdir = line.strip().split(maxsplit=1)[1]
                           line = f"mkdir -p {tdir} 2>/dev/null; cd {tdir} || true"
           
-                      # GITHUB_ENV 动态变量即时导出支持
-                      if ">> $GITHUB_ENV" in line or ">> \"$GITHUB_ENV\"" in line:
-                          var_match = re.search(r"echo\s+[\"\']?([A-Za-z0-9_]+)=([^\"\'>]+)[\"\']?\s*>>", line)
-                          if var_match:
-                              vname, vval = var_match.group(1), var_match.group(2)
-                              line += f"; export {vname}=\"{vval}\""
-          
                       extracted_cmds.append(line)
+
+                      # 智能补全变量传递
+                      if ">> $GITHUB_ENV" in line or ">> \"$GITHUB_ENV\"" in line:
+                          extracted_cmds.append("source $GITHUB_ENV 2>/dev/null || true")
 
           with open("extracted_steps.txt", "w", encoding="utf-8") as f:
               f.write("\n".join(extracted_cmds) + "\n")
-          '
+          EOF
           
           if [ "$RUNNER_OS" = "Windows" ]; then
-            echo -e "\$MATRIX_PLATFORM='${{ github.event.inputs.target_platform }}'\n\$MATRIX_ARCH='${{ github.event.inputs.target_arch }}'\n\$GH_TOKEN='${{ secrets.PAT_TOKEN }}'\n" > dynamic_run.ps1
+            echo -e "export GITHUB_ENV=\$(mktemp)\nexport GITHUB_OUTPUT=\$(mktemp)\n\$MATRIX_PLATFORM='${{ github.event.inputs.target_platform }}'\n\$MATRIX_ARCH='${{ github.event.inputs.target_arch }}'\n\$GH_TOKEN='${{ secrets.PAT_TOKEN }}'\n" > dynamic_run.ps1
             cat extracted_steps.txt >> dynamic_run.ps1
             echo ">>>> [Windows 翻译官] 原厂表达式在线翻译成功！"
           else
             if [ "${{ github.event.inputs.target_arch }}" = "all" ]; then
-              echo -e "#!/bin/bash\nexport CGO_ENABLED=1\nexport GRADLE_OPTS=\"-Xmx4g\"\nexport MATRIX_PLATFORM='${{ github.event.inputs.target_platform }}'\nexport GH_TOKEN='${{ secrets.PAT_TOKEN }}'\nexport GITHUB_REF='refs/heads/${{ env.TARGET_BRANCH }}'\n" > dynamic_run.sh
+              echo -e "#!/bin/bash\nexport GITHUB_ENV=\$(mktemp)\nexport GITHUB_OUTPUT=\$(mktemp)\nexport CGO_ENABLED=1\nexport GRADLE_OPTS=\"-Xmx4g\"\nexport MATRIX_PLATFORM='${{ github.event.inputs.target_platform }}'\nexport GH_TOKEN='${{ secrets.PAT_TOKEN }}'\nexport GITHUB_REF='refs/heads/${{ env.TARGET_BRANCH }}'\nexport TARGET_BRANCH='${{ env.TARGET_BRANCH }}'\n" > dynamic_run.sh
             else
-              echo -e "#!/bin/bash\nexport CGO_ENABLED=1\nexport GRADLE_OPTS=\"-Xmx4g\"\nexport MATRIX_PLATFORM='${{ github.event.inputs.target_platform }}'\nexport MATRIX_ARCH='${{ github.event.inputs.target_arch }}'\nexport GH_TOKEN='${{ secrets.PAT_TOKEN }}'\nexport GITHUB_REF='refs/heads/${{ env.TARGET_BRANCH }}'\n" > dynamic_run.sh
+              echo -e "#!/bin/bash\nexport GITHUB_ENV=\$(mktemp)\nexport GITHUB_OUTPUT=\$(mktemp)\nexport CGO_ENABLED=1\nexport GRADLE_OPTS=\"-Xmx4g\"\nexport MATRIX_PLATFORM='${{ github.event.inputs.target_platform }}'\nexport MATRIX_ARCH='${{ github.event.inputs.target_arch }}'\nexport GH_TOKEN='${{ secrets.PAT_TOKEN }}'\nexport GITHUB_REF='refs/heads/${{ env.TARGET_BRANCH }}'\nexport TARGET_BRANCH='${{ env.TARGET_BRANCH }}'\n" > dynamic_run.sh
             fi
             cat extracted_steps.txt >> dynamic_run.sh
             chmod +x dynamic_run.sh
             echo ">>>> [Unix 翻译官] 原厂表达式在线翻译成功！"
           fi
 
-      # 12-A. Unix 跑道执行（Linux / macOS）
+      # 12-A. Unix 跑道执行
       - name: Execute Dynamic Build Process [Linux / macOS Runner]
         if: ${{ runner.os != 'Windows' }}
         shell: bash
@@ -496,7 +492,7 @@ jobs:
         run: |
           .\dynamic_run.ps1
 
-      # ⭐ 13. 平台精准对号入座脱壳机：根据 target_platform 严格限制搜刮格式（如 macOS 模式下绝不上抓 .apk）
+      # 13. 平台精准对号入座脱壳机
       - name: Flatten and Clean Output Binaries via Platform-Aware Python Filter
         shell: python
         run: |
@@ -513,7 +509,6 @@ jobs:
           target_dir = "unified_dist"
           os.makedirs(target_dir, exist_ok=True)
 
-          # 🟢 严格按平台划分白名单后缀
           platform_ext_map = {
               "android": (".apk", ".aab", ".aar"),
               "macos": (".dmg", ".pkg", ".zip", ".tar.gz"),
@@ -535,7 +530,6 @@ jobs:
                   continue
               for file in files:
                   if file.lower().endswith(allowed_exts):
-                      # 强制防护：如果目标是 macOS/Windows，拉黑历史残留的 apk 文件
                       if platform in ["macos", "windows", "linux"] and file.lower().endswith((".apk", ".aab")):
                           continue
                       full_p = os.path.join(root, file)
