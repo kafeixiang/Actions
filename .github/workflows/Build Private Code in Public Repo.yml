@@ -66,7 +66,7 @@ on:
           - 'linux'
 
       target_arch:
-        description: '🏗️ 目标架构 (选择 all 将自动触发三个架构循环各编译一个)'
+        description: '🏗️ 目标架构 (选择 all 将自动触发架构依次编译)'
         required: true
         default: 'all'
         type: choice
@@ -146,6 +146,7 @@ jobs:
           REPO="${{ github.event.inputs.repo }}"
           PRESET="${{ github.event.inputs.branch_preset }}"
           CUSTOM="${{ github.event.inputs.custom_branch }}"
+          ARCH="${{ github.event.inputs.target_arch }}"
           
           if [ "$PRESET" = "CUSTOM_INPUT_BOX" ]; then
             BRANCH="$CUSTOM"
@@ -154,8 +155,15 @@ jobs:
           fi
           
           if [ -z "$BRANCH" ]; then
-            echo "❌ 错误：你选择了手动输入分支，但自定义分支输入框留空！"
+            echo "❌ 错误：自定义分支输入框留空！"
             exit 1
+          fi
+
+          # 架构兜底逻辑：若选了 all，桌面端架构兜底设置为 amd64，避免 Gradle 传空
+          if [ "$ARCH" = "all" ] || [ -z "$ARCH" ]; then
+            TARGET_ARCH_ENV="amd64"
+          else
+            TARGET_ARCH_ENV="$ARCH"
           fi
           
           PROJECT_NAME=$(echo "$REPO" | cut -d'/' -f2)
@@ -164,6 +172,7 @@ jobs:
           echo "TARGET_BRANCH=$BRANCH" >> $GITHUB_ENV
           echo "PROJECT_NAME=$PROJECT_NAME" >> $GITHUB_ENV
           echo "TARGET_PLATFORM=${{ matrix.platform }}" >> $GITHUB_ENV
+          echo "TARGET_ARCH_ENV=$TARGET_ARCH_ENV" >> $GITHUB_ENV
           echo "BUILD_MODE=${{ github.event.inputs.build_mode }}" >> $GITHUB_ENV
 
       # 2. 检出目标私有仓库
@@ -239,7 +248,6 @@ jobs:
             echo ">>>> 🎯 成功锁定目标脚本: $CHOSEN_WF"
             echo "CHOSEN_WORKFLOW=$CHOSEN_WF" >> $GITHUB_ENV
           
-            # 检测是否依赖 Zig
             if grep -qi "setup-zig" "$CHOSEN_WF" || grep -qi "zig" "$CHOSEN_WF"; then
               echo "HAS_ZIG=true" >> $GITHUB_ENV
               echo "DYNAMIC_ZIG=0.13.0" >> $GITHUB_ENV
@@ -302,7 +310,7 @@ jobs:
             echo "ANDROID_NDK_HOME=$NDK_PATH" >> $GITHUB_ENV
           fi
 
-      # 10. YAML 步阶解析与子 Shell 隔离打包生成器
+      # 10. YAML 步阶解析与子 Shell 隔离打包生成器 (注入 MATRIX_ARCH 保底参数)
       - name: High-Fidelity Translate and Generate Build Script
         shell: bash
         run: |
@@ -313,6 +321,7 @@ jobs:
 
           wf_path = os.environ.get("CHOSEN_WORKFLOW")
           target_platform = os.environ.get("TARGET_PLATFORM", "android").lower()
+          target_arch = os.environ.get("TARGET_ARCH_ENV", "amd64")
 
           with open(wf_path, "r", encoding="utf-8") as f:
               wf = yaml.safe_load(f)
@@ -321,9 +330,9 @@ jobs:
           extracted_steps = []
 
           mapping = {
-              "matrix.platform": "$MATRIX_PLATFORM",
-              "matrix.arch": "$MATRIX_ARCH",
-              "matrix.target": "$MATRIX_ARCH",
+              "matrix.platform": target_platform,
+              "matrix.arch": target_arch,
+              "matrix.target": target_arch,
               "github.token": "$GH_TOKEN",
               "github.ref": "$GITHUB_REF",
               "github.ref_name": "$TARGET_BRANCH",
@@ -344,7 +353,6 @@ jobs:
                   if not run_cmd: continue
           
                   step_if = str(step.get("if", "")).lower()
-                  # 平台逻辑简单过滤
                   if "matrix.platform == 'macos'" in step_if and target_platform != "macos": continue
                   if "matrix.platform == 'windows'" in step_if and target_platform != "windows": continue
                   if "matrix.platform == 'android'" in step_if and target_platform != "android": continue
@@ -361,7 +369,6 @@ jobs:
                       step_lines.append(line)
           
                   if step_lines:
-                      # 核心修复：用 () 子 shell 隔离每个 step 的目录和环境变量，避免 cd 污染全局路径
                       step_block = "(\n" + "\n".join(step_lines) + "\n)"
                       extracted_steps.append(step_block)
 
@@ -370,10 +377,10 @@ jobs:
           EOF
           
           if [ "$RUNNER_OS" = "Windows" ]; then
-            echo -e "\$env:GITHUB_ENV = [System.IO.Path]::GetTempFileName()\n\$env:GITHUB_OUTPUT = [System.IO.Path]::GetTempFileName()\n\$env:CGO_ENABLED = '1'\n\$env:GRADLE_OPTS = '-Xmx4g'\n\$env:MATRIX_PLATFORM = '${{ matrix.platform }}'\n\$env:GH_TOKEN = '${{ secrets.PAT_TOKEN }}'\n" > dynamic_run.ps1
+            echo -e "\$env:GITHUB_ENV = [System.IO.Path]::GetTempFileName()\n\$env:GITHUB_OUTPUT = [System.IO.Path]::GetTempFileName()\n\$env:CGO_ENABLED = '1'\n\$env:GRADLE_OPTS = '-Xmx4g'\n\$env:MATRIX_PLATFORM = '${{ matrix.platform }}'\n\$env:MATRIX_ARCH = '${{ env.TARGET_ARCH_ENV }}'\n\$env:GH_TOKEN = '${{ secrets.PAT_TOKEN }}'\n" > dynamic_run.ps1
             cat extracted_steps.txt >> dynamic_run.ps1
           else
-            echo -e "#!/bin/bash\nexport GITHUB_ENV=\$(mktemp)\nexport GITHUB_OUTPUT=\$(mktemp)\nexport CGO_ENABLED=1\nexport GRADLE_OPTS=\"-Xmx4g\"\nexport MATRIX_PLATFORM='${{ matrix.platform }}'\nexport GH_TOKEN='${{ secrets.PAT_TOKEN }}'\nexport GITHUB_REF='refs/heads/${{ env.TARGET_BRANCH }}'\nexport TARGET_BRANCH='${{ env.TARGET_BRANCH }}'\n" > dynamic_run.sh
+            echo -e "#!/bin/bash\nexport GITHUB_ENV=\$(mktemp)\nexport GITHUB_OUTPUT=\$(mktemp)\nexport CGO_ENABLED=1\nexport GRADLE_OPTS=\"-Xmx4g\"\nexport MATRIX_PLATFORM='${{ matrix.platform }}'\nexport MATRIX_ARCH='${{ env.TARGET_ARCH_ENV }}'\nexport GH_TOKEN='${{ secrets.PAT_TOKEN }}'\nexport GITHUB_REF='refs/heads/${{ env.TARGET_BRANCH }}'\nexport TARGET_BRANCH='${{ env.TARGET_BRANCH }}'\n" > dynamic_run.sh
             cat extracted_steps.txt >> dynamic_run.sh
             chmod +x dynamic_run.sh
           fi
@@ -382,9 +389,8 @@ jobs:
       - name: Execute Dynamic Build Process
         shell: bash
         run: |
-          echo "🚀 开始执行平台编译: ${{ matrix.platform }} [Runner Host: $RUNNER_OS]"
+          echo "🚀 开始执行平台编译: ${{ matrix.platform }} [架构: ${{ env.TARGET_ARCH_ENV }} | Runner Host: $RUNNER_OS]"
           
-          # husi 底层 Go Core 缺失时的强行补全机制
           if [ "${{ env.PROJECT_NAME }}" = "husi" ]; then
             if [ "${{ matrix.platform }}" = "android" ] && [ ! -f "composeApp/libs/libcore.aar" ]; then
               echo ">>>> 🔧 [husi] 检测到底层 Android libcore.aar 缺失，启动交叉编译..."
