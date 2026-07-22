@@ -373,10 +373,11 @@ jobs:
             echo "ANDROID_NDK_HOME=$NDK_PATH" >> $GITHUB_ENV
           fi
 
-      # ⭐ 11. 升级：利用系统原生 yq 输出 JSON，Python 使用内置 json 模块，彻底摆脱 PyYAML / pip 依赖
+      # 11. 强隔离 JSON 指令抽取官（跨平台零依赖）
       - name: High-Fidelity Translate and Generate Build Script
         shell: bash
         run: |
+          command -v yq &>/dev/null || brew install yq 2>/dev/null || true
           yq eval -o=json '.' "$CHOSEN_WORKFLOW" > workflow.json
           
           python3 << 'EOF'
@@ -517,6 +518,48 @@ jobs:
         run: |
           .\dynamic_run.ps1
 
+      # ⭐ 12-C. 新增核心黑科技：macOS 自动化 DMG 镜像压制引擎（彻底解决只产出 .zip / .app 的痛点）
+      - name: Auto Package macOS App into DMG
+        if: env.TARGET_PLATFORM == 'macos'
+        shell: bash
+        run: |
+          echo ">>>> 🍏 正在校验并确保 macOS DMG 镜像产物..."
+          mkdir -p dist
+          
+          DMG_FILE=$(find . -name "*.dmg" -type f ! -path "./unified_dist/*" ! -path "*/.git/*" | head -n 1)
+          
+          if [ -n "$DMG_FILE" ]; then
+            echo ">>>> ✅ 原厂已直接生成 DMG 文件: $DMG_FILE"
+          else
+            echo ">>>> 🔨 未直接找到 .dmg 镜像，自动启动 macOS DMG 强行压制引擎..."
+            APP_PATH=$(find . -name "*.app" -type d ! -path "*/.git/*" ! -path "*/Pods/*" ! -path "*/DerivedData/*" | head -n 1)
+          
+            if [ -z "$APP_PATH" ]; then
+              ZIP_PATH=$(find . -name "*.zip" ! -path "*/.git/*" ! -path "*/.pub-cache/*" | head -n 1)
+              if [ -n "$ZIP_PATH" ]; then
+                echo ">>>> 📦 找到打包的 ZIP 文件 [$ZIP_PATH]，正在解压提取 .app 程序包..."
+                mkdir -p temp_app_unzip
+                unzip -q "$ZIP_PATH" -d temp_app_unzip || true
+                APP_PATH=$(find temp_app_unzip -name "*.app" -type d | head -n 1)
+              fi
+            fi
+          
+            if [ -n "$APP_PATH" ]; then
+              APP_NAME=$(basename "$APP_PATH" .app)
+              FINAL_DMG="dist/${APP_NAME}-macOS.dmg"
+              echo ">>>> 🚀 正在将应用 [$APP_PATH] 转化为标准 Mac 安装盘: $FINAL_DMG"
+          
+              if command -v hdiutil &> /dev/null; then
+                hdiutil create -volname "$APP_NAME" -srcfolder "$APP_PATH" -ov -format UDZO "$FINAL_DMG"
+                echo ">>>> 🎉 hdiutil 打包 DMG 成功！"
+              elif command -v genisoimage &> /dev/null; then
+                genisoimage -V "$APP_NAME" -D -R -apple -o "$FINAL_DMG" "$APP_PATH" || true
+              fi
+            else
+              echo "⚠️ 未找到任何 .app 程序实体包，无法自动合成 DMG。"
+            fi
+          fi
+
       # 13. 平台精准对号入座脱壳机
       - name: Flatten and Clean Output Binaries via Platform-Aware Python Filter
         shell: python
@@ -589,7 +632,7 @@ jobs:
                   shutil.copy2(full_p, dest_path)
                   print(f"-> [🛡️ 平台保底搜刮成功] {file} => 写入 => {target_dir}")
 
-      # 14. 联动发布
+      # ⭐ 14. 联动发布（重构：多源版本号提取官，完美生成如 FlClash-dev-core-v0.8.8 的精纯 Tag）
       - name: Push and Publish to Public Repo Release Page
         if: ${{ github.event.inputs.upload_to_release == 'true' }}
         env:
@@ -599,29 +642,55 @@ jobs:
           if [ -d "unified_dist" ] && [ "$(ls -A unified_dist 2>/dev/null)" ]; then
             CLEAN_BRANCH=$(echo "${{ env.TARGET_BRANCH }}" | tr '/' '-')
           
-            VERSION=$(python3 -c '
+            VERSION=$(python3 << 'EOF'
           import os, re
-          files = os.listdir("unified_dist")
-          version = ""
-          for f in files:
-              m = re.search(r"(\d+\.\d+\.\d+(?:-[a-z0-9.]+)?)" , f, re.IGNORECASE)
-              if m:
-                  v = m.group(1)
-                  v = re.sub(r"-(?:arm64|amd64|arm|x86|x86_64|v8a|v7a|unsigned|release|desktop|windows|macos|linux)$", "", v, flags=re.IGNORECASE)
-                  version = v
-                  break
-          print(version)
-          ')
+
+          def extract_version():
+              noise = {"arm64", "amd64", "arm", "x86", "x86_64", "v8a", "v7a", "unsigned", "release", "desktop", "windows", "macos", "linux", "android", "foss", "oss", "pkg", "dmg", "apk", "zip"}
+              files = os.listdir("unified_dist") if os.path.exists("unified_dist") else []
+          
+              # 1. 扫描 unified_dist 文件名中的 X.Y.Z 规范版本号
+              for f in files:
+                  m = re.search(r'v?(\d+\.\d+\.\d+(?:[-.][a-zA-Z0-9.]+)*)', f, re.IGNORECASE)
+                  if m:
+                      raw_v = m.group(1)
+                      parts = raw_v.split('-')
+                      clean_p = [p for p in parts if p.lower() not in noise]
+                      v = "-".join(clean_p)
+                      if v:
+                          return v
+
+              # 2. 从 husi / Android 配置文件读取
+              if os.path.exists("husi.properties"):
+                  with open("husi.properties", "r", encoding="utf-8", errors="ignore") as fp:
+                      for line in fp:
+                          if line.startswith("VERSION_NAME="):
+                              return line.split("=")[1].strip()
+
+              # 3. 从 FlClash (pubspec.yaml) 读取
+              if os.path.exists("pubspec.yaml"):
+                  with open("pubspec.yaml", "r", encoding="utf-8", errors="ignore") as fp:
+                      for line in fp:
+                          if line.strip().startswith("version:"):
+                              v = line.split(":")[1].strip().split("+")[0].strip().strip('"').strip("'")
+                              if v:
+                                  return v
+
+              return ""
+
+          print(extract_version())
+          EOF
+          )
           
             if [ -z "$VERSION" ]; then
               VERSION="${{ github.run_number }}"
             fi
           
             TAG_NAME="${{ env.PROJECT_NAME }}-${CLEAN_BRANCH}-v${VERSION}"
-            echo ">>>> 🚀 生成 Release Tag: $TAG_NAME"
+            echo ">>>> 🚀 成果对齐！已根据多源精准检索提炼 Tag 名称: $TAG_NAME"
           
             gh release create "$TAG_NAME" unified_dist/* --repo "${{ github.repository }}" --title "$TAG_NAME" --notes "Automated smart build from private upstream: ${{ env.TARGET_REPO }} [${{ env.TARGET_BRANCH }}]" --prerelease
-            echo ">>>> 🎉 全线发布成功！"
+            echo ">>>> 🎉 全线发布成功！请前往公开库 Release 页面查收！"
           else
             echo "⚠️ 未找到任何有效编译产物，跳过 Release 发布。"
           fi
