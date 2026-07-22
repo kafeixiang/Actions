@@ -54,11 +54,12 @@ on:
           - 'desktop'
 
       target_platform:
-        description: '💻 目标系统 (仅对包含多平台矩阵的项目生效)'
+        description: '💻 目标系统 (选择 all 将自动并行触发所有系统编译)'
         required: true
-        default: 'android'
+        default: 'all'
         type: choice
         options:
+          - 'all'
           - 'android'
           - 'macos'
           - 'windows'
@@ -88,37 +89,56 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
 
 jobs:
+  # 1. 动态生成平台与 Runner 映射矩阵
   setup_matrix:
     runs-on: ubuntu-latest
     outputs:
-      os_runner: ${{ steps.set_os.outputs.os_runner }}
+      matrix: ${{ steps.set_matrix.outputs.matrix }}
     steps:
-      - id: set_os
+      - id: set_matrix
         run: |
           REPO="${{ github.event.inputs.repo }}"
           MODE="${{ github.event.inputs.build_mode }}"
           PLAT="${{ github.event.inputs.target_platform }}"
           
-          if echo "$REPO" | grep -q "v2rayN"; then
-            echo "os_runner=windows-latest" >> $GITHUB_OUTPUT
-          elif [ "$PLAT" = "windows" ] && ! echo "$REPO" | grep -q "husi"; then
-            echo "os_runner=windows-latest" >> $GITHUB_OUTPUT
-          elif [ "$MODE" = "mac" ] || [ "$PLAT" = "macos" ]; then
+          # husi 项目全平台统一在 Linux (ubuntu-24.04) 上执行交叉编译
+          get_runner() {
+            local p="$1"
             if echo "$REPO" | grep -q "husi"; then
-              echo "os_runner=ubuntu-24.04" >> $GITHUB_OUTPUT
+              echo "ubuntu-24.04"
+            elif echo "$REPO" | grep -q "v2rayN"; then
+              echo "windows-latest"
+            elif [ "$p" = "windows" ]; then
+              echo "windows-latest"
+            elif [ "$p" = "macos" ] || [ "$MODE" = "mac" ]; then
+              echo "macos-latest"
             else
-              echo "os_runner=macos-latest" >> $GITHUB_OUTPUT
+              echo "ubuntu-24.04"
             fi
+          }
+
+          if [ "$PLAT" = "all" ]; then
+            RUNNER_ANDROID=$(get_runner "android")
+            RUNNER_MACOS=$(get_runner "macos")
+            RUNNER_WINDOWS=$(get_runner "windows")
+            RUNNER_LINUX=$(get_runner "linux")
+          
+            echo "matrix={\"include\":[{\"platform\":\"android\",\"os_runner\":\"$RUNNER_ANDROID\"},{\"platform\":\"macos\",\"os_runner\":\"$RUNNER_MACOS\"},{\"platform\":\"windows\",\"os_runner\":\"$RUNNER_WINDOWS\"},{\"platform\":\"linux\",\"os_runner\":\"$RUNNER_LINUX\"}]}" >> $GITHUB_OUTPUT
           else
-            echo "os_runner=ubuntu-24.04" >> $GITHUB_OUTPUT
+            RUNNER=$(get_runner "$PLAT")
+            echo "matrix={\"include\":[{\"platform\":\"$PLAT\",\"os_runner\":\"$RUNNER\"}]}" >> $GITHUB_OUTPUT
           fi
 
+  # 2. 矩阵化并行编译任务
   build_using_native_script:
     needs: setup_matrix
-    runs-on: ${{ needs.setup_matrix.outputs.os_runner }}
+    runs-on: ${{ matrix.os_runner }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.setup_matrix.outputs.matrix) }}
 
     steps:
-      # 1. 智能合流
+      # 1. 智能解析分支与参数
       - name: Parse Selection
         id: parse
         shell: bash
@@ -134,7 +154,7 @@ jobs:
           fi
           
           if [ -z "$BRANCH" ]; then
-            echo "❌ 错误：你选择了手动输入分支，但下方的自定义输入框留空了！"
+            echo "❌ 错误：你选择了手动输入分支，但自定义分支输入框留空！"
             exit 1
           fi
           
@@ -143,7 +163,7 @@ jobs:
           echo "TARGET_REPO=$REPO" >> $GITHUB_ENV
           echo "TARGET_BRANCH=$BRANCH" >> $GITHUB_ENV
           echo "PROJECT_NAME=$PROJECT_NAME" >> $GITHUB_ENV
-          echo "TARGET_PLATFORM=${{ github.event.inputs.target_platform }}" >> $GITHUB_ENV
+          echo "TARGET_PLATFORM=${{ matrix.platform }}" >> $GITHUB_ENV
           echo "BUILD_MODE=${{ github.event.inputs.build_mode }}" >> $GITHUB_ENV
 
       # 2. 检出目标私有仓库
@@ -153,9 +173,10 @@ jobs:
           repository: ${{ env.TARGET_REPO }}
           token: ${{ secrets.PAT_TOKEN }}
           ref: ${{ env.TARGET_BRANCH }}
+          submodules: recursive
           fetch-depth: 0
 
-      # 3. 剧本锁定与环境参数抓取
+      # 3. 剧本锁定与环境参数/Zig 检测
       - name: Select Compilation Workflow and Extract Versions
         id: extract_env
         shell: bash
@@ -170,139 +191,64 @@ jobs:
           MODE="${{ env.BUILD_MODE }}"
           PLAT="${{ env.TARGET_PLATFORM }}"
           
-          echo ">>>> 📡 正在加载原厂核心地图进行强匹配路由..."
+          echo ">>>> 📡 正在针对 $PROJECT [$PLAT] 进行智能工作流配置查找..."
           
-          if [ "$MODE" = "build" ]; then
-            if [ -f ".github/workflows/build.yaml" ]; then
-              CHOSEN_WF=".github/workflows/build.yaml"
-            elif [ -f ".github/workflows/build.yml" ]; then
-              CHOSEN_WF=".github/workflows/build.yml"
+          if [ "$PROJECT" = "husi" ]; then
+            if [ "$PLAT" = "macos" ] || [ "$PLAT" = "windows" ] || [ "$PLAT" = "linux" ] || [ "$MODE" = "mac" ] || [ "$MODE" = "desktop" ]; then
+              if [ -f ".github/workflows/desktop.yml" ]; then CHOSEN_WF=".github/workflows/desktop.yml";
+              elif [ -f ".github/workflows/desktop.yaml" ]; then CHOSEN_WF=".github/workflows/desktop.yaml";
+              elif [ -f ".github/workflows/mac.yml" ]; then CHOSEN_WF=".github/workflows/mac.yml";
+              fi
             fi
           fi
 
           if [ -z "$CHOSEN_WF" ]; then
             case "$PROJECT" in
               "FlClash")
-                if [ -f ".github/workflows/build.yaml" ]; then
-                  CHOSEN_WF=".github/workflows/build.yaml"
-                elif [ -f ".github/workflows/build.yml" ]; then
-                  CHOSEN_WF=".github/workflows/build.yml"
-                fi
+                [ -f ".github/workflows/build.yaml" ] && CHOSEN_WF=".github/workflows/build.yaml"
+                [ -f ".github/workflows/build.yml" ] && CHOSEN_WF=".github/workflows/build.yml"
                 ;;
               "v2rayN"|"v2rayNG")
                 CHOSEN_WF=".github/workflows/build.yml"
                 ;;
               "ClashMetaForAndroid")
-                if [ "$MODE" = "debug" ]; then
-                  CHOSEN_WF=".github/workflows/build-debug.yaml"
-                elif [ "$MODE" = "nightly" ]; then
-                  CHOSEN_WF=".github/workflows/build-pre-release.yaml"
-                else
-                  CHOSEN_WF=".github/workflows/build-release.yaml"
-                fi
+                [ "$MODE" = "debug" ] && CHOSEN_WF=".github/workflows/build-debug.yaml" || CHOSEN_WF=".github/workflows/build-release.yaml"
                 ;;
               "NekoBoxForAndroid")
-                if [ "$MODE" = "debug" ] || [ "$MODE" = "nightly" ]; then
-                  CHOSEN_WF=".github/workflows/preview.yml"
-                else
-                  CHOSEN_WF=".github/workflows/SSR.yml"
-                fi
-                ;;
-              "husi")
-                if [ "$PLAT" = "macos" ] || [ "$PLAT" = "windows" ] || [ "$MODE" = "mac" ] || [ "$MODE" = "desktop" ]; then
-                  if [ -f ".github/workflows/desktop.yml" ]; then
-                    CHOSEN_WF=".github/workflows/desktop.yml"
-                  elif [ -f ".github/workflows/mac.yml" ]; then
-                    CHOSEN_WF=".github/workflows/mac.yml"
-                  elif [ -f ".github/workflows/desktop.yaml" ]; then
-                    CHOSEN_WF=".github/workflows/desktop.yaml"
-                  else
-                    for f in .github/workflows/*.yml .github/workflows/*.yaml; do
-                      if grep -q "Build Desktop" "$f" 2>/dev/null; then
-                        CHOSEN_WF="$f"; break
-                      fi
-                    done
-                  fi
-                elif [ "$MODE" = "nightly" ] && [ -f ".github/workflows/nightly.yml" ]; then
-                  CHOSEN_WF=".github/workflows/nightly.yml"
-                elif [ -f ".github/workflows/release.yml" ]; then
-                  CHOSEN_WF=".github/workflows/release.yml"
-                elif [ -f ".github/workflows/build.yaml" ]; then
-                  CHOSEN_WF=".github/workflows/build.yaml"
-                fi
-                ;;
-              "Exclave")
-                if [ "$MODE" = "debug" ] && [ -f ".github/workflows/debug.yml" ]; then
-                  CHOSEN_WF=".github/workflows/debug.yml"
-                elif [ -f ".github/workflows/release.yml" ]; then
-                  CHOSEN_WF=".github/workflows/release.yml"
-                elif [ -f ".github/workflows/build.yaml" ]; then
-                  CHOSEN_WF=".github/workflows/build.yaml"
-                fi
+                [ "$MODE" = "debug" ] && CHOSEN_WF=".github/workflows/preview.yml" || CHOSEN_WF=".github/workflows/SSR.yml"
                 ;;
             esac
           fi
           
           if [ -z "$CHOSEN_WF" ] || [ ! -f "$CHOSEN_WF" ]; then
-            echo ">>>> ⚠️ 当前项目未命中硬编码地图，正在执行全自动化特征层扫描..."
             if [ -d ".github/workflows" ]; then
               FILES=$(ls .github/workflows/*.yml .github/workflows/*.yaml 2>/dev/null || true)
               for f in $FILES; do
                 fname=$(basename "$f" | tr '[:upper:]' '[:lower:]')
                 if [[ "$fname" == *"$MODE"* || "$fname" == *"$PLAT"* ]]; then
-                  if [[ "$fname" != *"lint"* && "$fname" != *"test"* && "$fname" != *"stale"* && "$fname" != *"cleanup"* && "$fname" != *"format"* ]]; then
+                  if [[ "$fname" != *"lint"* && "$fname" != *"test"* && "$fname" != *"stale"* ]]; then
                     CHOSEN_WF="$f"; break
                   fi
                 fi
               done
-              if [ -z "$CHOSEN_WF" ]; then
-                for f in $FILES; do
-                  fname=$(basename "$f" | tr '[:upper:]' '[:lower:]')
-                  if [[ "$fname" == *"build"* || "$fname" == *"apk"* || "$fname" == *"compile"* || "$fname" == *"ci"* || "$fname" == *"desktop"* ]]; then
-                    if [[ "$fname" != *"lint"* && "$fname" != *"test"* && "$fname" != *"stale"* && "$fname" != *"cleanup"* && "$fname" != *"format"* ]]; then
-                      CHOSEN_WF="$f"; break
-                    fi
-                  fi
-                done
-              fi
               [ -z "$CHOSEN_WF" ] && CHOSEN_WF=$(echo "$FILES" | head -n 1)
             fi
           fi
           
-          if [ ! -z "$CHOSEN_WF" ] && [ -f "$CHOSEN_WF" ]; then
-            echo ">>>> 🎯 导航闭环！成功锁定本次编译的原厂剧本: $CHOSEN_WF"
+          if [ -n "$CHOSEN_WF" ] && [ -f "$CHOSEN_WF" ]; then
+            echo ">>>> 🎯 成功锁定目标脚本: $CHOSEN_WF"
             echo "CHOSEN_WORKFLOW=$CHOSEN_WF" >> $GITHUB_ENV
           
-            FROM_WF_GO=$(grep -oP 'go-version:\s*[\x27\x22]?\K[0-9\.]+' "$CHOSEN_WF" 2>/dev/null | head -n 1 || true)
-            if [ ! -z "$FROM_WF_GO" ]; then
-              [[ "$FROM_WF_GO" =~ ^[0-9]+\.[0-9]+$ ]] && FROM_WF_GO="${FROM_WF_GO}.x"
-              GO_VER="$FROM_WF_GO"
-            fi
-            FROM_WF_JAVA=$(grep -oP 'java-version:\s*[\x27\x22]?\K[0-9\x27\x22]+' "$CHOSEN_WF" 2>/dev/null | head -n 1 | tr -d "'\"" || true)
-            [ ! -z "$FROM_WF_JAVA" ] && JAVA_VER="$FROM_WF_JAVA"
-            FROM_WF_DOTNET=$(grep -oP 'dotnet-version:\s*[\x27\x22]?\K[0-9\.]+' "$CHOSEN_WF" 2>/dev/null | head -n 1 || true)
-            [ ! -z "$FROM_WF_DOTNET" ] && DOTNET_VER="$FROM_WF_DOTNET"
-
-            FROM_WF_FLUTTER=$(grep -oP 'FLUTTER_VERSION:\s*[\x27\x22]?\K[0-9\.]+' "$CHOSEN_WF" 2>/dev/null | head -n 1 || true)
-            [ ! -z "$FROM_WF_FLUTTER" ] && FLUTTER_VER="$FROM_WF_FLUTTER"
-
-            if grep -q "setup-zig" "$CHOSEN_WF"; then
-              ZIG_V=$(grep -A 3 "setup-zig" "$CHOSEN_WF" | grep "version:" | head -n 1 | awk '{print $2}' | tr -d "'\"" || true)
-              [ -z "$ZIG_V" ] && ZIG_V="0.13.0"
+            # 检测是否依赖 Zig
+            if grep -qi "setup-zig" "$CHOSEN_WF" || grep -qi "zig" "$CHOSEN_WF"; then
               echo "HAS_ZIG=true" >> $GITHUB_ENV
-              echo "DYNAMIC_ZIG=$ZIG_V" >> $GITHUB_ENV
+              echo "DYNAMIC_ZIG=0.13.0" >> $GITHUB_ENV
             fi
           else
-            echo "❌ 致命错误：无论通过地图还是特征扫描，均无法找到目标编译流文件！"
+            echo "❌ 致命错误：无法定位编译剧本！"
             exit 1
           fi
-          
-          if [ -f "go.mod" ] && [ "$GO_VER" = "1.23.x" ]; then
-            GO_MOD_V=$(awk '/^go [0-9]/ {print $2}' go.mod)
-            [ ! -z "$GO_MOD_V" ] && GO_VER="${GO_MOD_V}.x"
-          fi
-          
-          echo ">>>> [智能匹配成功] DYNAMIC 环境参数解锁：Go=$GO_VER, Java=$JAVA_VER, .NET=$DOTNET_VER, Flutter=$FLUTTER_VER"
+
           echo "DYNAMIC_GO=$GO_VER" >> $GITHUB_ENV
           echo "DYNAMIC_JAVA=$JAVA_VER" >> $GITHUB_ENV
           echo "DYNAMIC_DOTNET=$DOTNET_VER" >> $GITHUB_ENV
@@ -315,12 +261,12 @@ jobs:
           git config --global url."https://${{ secrets.PAT_TOKEN }}@github.com/".insteadOf "https://github.com/"
           git submodule update --init --recursive
 
-      # 5. 配置 Zig 环境
+      # 5. 配置 Zig 环境（针对 husi/CGO 交叉编译必须）
       - name: Set up Zig Toolchain
-        if: env.HAS_ZIG == 'true'
+        if: env.HAS_ZIG == 'true' || env.PROJECT_NAME == 'husi'
         uses: mlugg/setup-zig@v2
         with:
-          version: ${{ env.DYNAMIC_ZIG }}
+          version: ${{ env.DYNAMIC_ZIG || '0.13.0' }}
 
       # 6. 配置 Java 环境
       - name: Set up Java Runtime
@@ -332,12 +278,10 @@ jobs:
 
       # 7. 配置 Go 环境
       - name: Set up Go Runtime
-        if: env.PROJECT_NAME == 'Exclave' || env.PROJECT_NAME == 'NekoBoxForAndroid' || env.PROJECT_NAME == 'husi' || env.PROJECT_NAME == 'ClashMetaForAndroid' || env.PROJECT_NAME == 'FlClash' || env.PROJECT_NAME == 'sing-box' || env.PROJECT_NAME == 'mihomo' || env.PROJECT_NAME == 'Xray'
         uses: actions/setup-go@v5
         with:
           go-version: ${{ env.DYNAMIC_GO }}
           cache: true
-          cache-dependency-path: "**/*go.sum"
 
       # 8. 挂载 Gradle 编译缓存
       - name: Setup Gradle Cache for Fast Build
@@ -346,97 +290,66 @@ jobs:
         with:
           cache-read-only: false
 
-      # 9. 配置 .NET / Flutter 环境
-      - name: Set up .NET SDK
-        if: env.PROJECT_NAME == 'v2rayN'
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: ${{ env.DYNAMIC_DOTNET }}
-
-      - name: Set up Flutter
-        if: env.PROJECT_NAME == 'FlClash'
-        uses: subosito/flutter-action@v2
-        with:
-          flutter-version: ${{ env.DYNAMIC_FLUTTER }}
-          channel: 'stable'
-          cache: true
-
-      # 10. 挂载 Android 本地映射属性
+      # 9. 针对 Android 自动补充 SDK 映射
       - name: Prepare Local Properties
-        if: env.PROJECT_NAME != 'v2rayN' && env.TARGET_PLATFORM == 'android'
+        if: matrix.platform == 'android'
         shell: bash
         run: |
           echo "sdk.dir=$ANDROID_HOME" > local.properties
           NDK_PATH=$(ls -d $ANDROID_HOME/ndk/* 2>/dev/null | sort -V | tail -n 1 || echo "")
-          if [ ! -z "$NDK_PATH" ]; then
+          if [ -n "$NDK_PATH" ]; then
             echo "ndk.dir=$NDK_PATH" >> local.properties
             echo "ANDROID_NDK_HOME=$NDK_PATH" >> $GITHUB_ENV
           fi
 
-      # ⭐ 11. 升级：利用系统原生 yq 输出 JSON，Python 使用内置 json 模块，彻底摆脱 PyYAML / pip 依赖
+      # 10. YAML 步阶解析与子 Shell 隔离打包生成器
       - name: High-Fidelity Translate and Generate Build Script
         shell: bash
         run: |
-          yq eval -o=json '.' "$CHOSEN_WORKFLOW" > workflow.json
+          python3 -m pip install --quiet pyyaml --break-system-packages 2>/dev/null || python3 -m pip install --quiet pyyaml 2>/dev/null || true
           
           python3 << 'EOF'
-          import json, re, os
+          import yaml, re, os
 
+          wf_path = os.environ.get("CHOSEN_WORKFLOW")
           target_platform = os.environ.get("TARGET_PLATFORM", "android").lower()
-          target_branch = os.environ.get("TARGET_BRANCH", "dev")
 
-          if not os.path.exists("workflow.json"):
-              print("❌ JSON 转换失败！")
-              exit(1)
+          with open(wf_path, "r", encoding="utf-8") as f:
+              wf = yaml.safe_load(f)
 
-          with open("workflow.json", "r", encoding="utf-8") as f:
-              wf = json.load(f)
-
-          jobs = wf.get("jobs", {})
-          extracted_cmds = []
+          jobs = wf.get("jobs", {}) if isinstance(wf, dict) else {}
+          extracted_steps = []
 
           mapping = {
               "matrix.platform": "$MATRIX_PLATFORM",
               "matrix.arch": "$MATRIX_ARCH",
               "matrix.target": "$MATRIX_ARCH",
-              "steps.project_version.outputs.version": "$VERSION",
-              "steps.version.outputs.go_version": "$GO_VERSION",
-              "env.DARWIN_SDKROOT": "$DARWIN_SDKROOT",
-              "env.RELEASE_TAG": "$RELEASE_TAG",
-              "env.FILE_SUFFIX": "$FILE_SUFFIX",
               "github.token": "$GH_TOKEN",
               "github.ref": "$GITHUB_REF",
-              "github.ref_name": "$TARGET_BRANCH"
+              "github.ref_name": "$TARGET_BRANCH",
+              "steps.sdk.outputs.path": "/home/runner/cross-jdk/include",
+              "steps.darwin-sdk.outputs.path": "/home/runner/MacOSX.sdk"
           }
 
           pat = r"\$" + r"\{\{\s*(.*?)\s*\}\}"
 
           for job_key, job_val in jobs.items():
-              if not isinstance(job_val, dict):
-                  continue
+              if not isinstance(job_val, dict): continue
               steps = job_val.get("steps", [])
-              if not steps:
-                  continue
+              if not steps or not isinstance(steps, list): continue
           
               for step in steps:
-                  if not isinstance(step, dict):
-                      continue
+                  if not isinstance(step, dict): continue
                   run_cmd = step.get("run")
-                  if not run_cmd:
-                      continue
+                  if not run_cmd: continue
           
                   step_if = str(step.get("if", "")).lower()
+                  # 平台逻辑简单过滤
+                  if "matrix.platform == 'macos'" in step_if and target_platform != "macos": continue
+                  if "matrix.platform == 'windows'" in step_if and target_platform != "windows": continue
+                  if "matrix.platform == 'android'" in step_if and target_platform != "android": continue
           
-                  if "matrix.platform == 'macos'" in step_if or 'matrix.platform == "macos"' in step_if or "matrix.platform=='macos'" in step_if or "matrix.platform,'macos'" in step_if:
-                      if target_platform != "macos":
-                          continue
-                  elif "matrix.platform == 'windows'" in step_if or 'matrix.platform == "windows"' in step_if or "matrix.platform=='windows'" in step_if or "matrix.platform,'windows'" in step_if:
-                      if target_platform != "windows":
-                          continue
-                  elif "matrix.platform == 'android'" in step_if or 'matrix.platform == "android"' in step_if or "matrix.platform=='android'" in step_if or "matrix.platform,'android'" in step_if:
-                      if target_platform != "android":
-                          continue
-          
+                  step_lines = []
                   lines = run_cmd.splitlines()
                   for line in lines:
                       def repl(m):
@@ -445,152 +358,87 @@ jobs:
           
                       line = re.sub(pat, repl, line)
                       line = re.sub(r"\$\{\{\s*.*?\s*\}\}", "", line)
+                      step_lines.append(line)
           
-                      if re.match(r"^\s*cd\s+", line):
-                          tdir = line.strip().split(maxsplit=1)[1]
-                          line = f"mkdir -p {tdir} 2>/dev/null; cd {tdir} || true"
-          
-                      extracted_cmds.append(line)
-
-                      if ">> $GITHUB_ENV" in line or ">> \"$GITHUB_ENV\"" in line:
-                          extracted_cmds.append("source $GITHUB_ENV 2>/dev/null || true")
+                  if step_lines:
+                      # 核心修复：用 () 子 shell 隔离每个 step 的目录和环境变量，避免 cd 污染全局路径
+                      step_block = "(\n" + "\n".join(step_lines) + "\n)"
+                      extracted_steps.append(step_block)
 
           with open("extracted_steps.txt", "w", encoding="utf-8") as f:
-              f.write("\n".join(extracted_cmds) + "\n")
+              f.write("\n\n".join(extracted_steps) + "\n")
           EOF
           
           if [ "$RUNNER_OS" = "Windows" ]; then
-            echo -e "export GITHUB_ENV=\$(mktemp)\nexport GITHUB_OUTPUT=\$(mktemp)\nexport IS_STABLE='false'\n\$MATRIX_PLATFORM='${{ github.event.inputs.target_platform }}'\n\$MATRIX_ARCH='${{ github.event.inputs.target_arch }}'\n\$GH_TOKEN='${{ secrets.PAT_TOKEN }}'\n" > dynamic_run.ps1
+            echo -e "\$env:GITHUB_ENV = [System.IO.Path]::GetTempFileName()\n\$env:GITHUB_OUTPUT = [System.IO.Path]::GetTempFileName()\n\$env:CGO_ENABLED = '1'\n\$env:GRADLE_OPTS = '-Xmx4g'\n\$env:MATRIX_PLATFORM = '${{ matrix.platform }}'\n\$env:GH_TOKEN = '${{ secrets.PAT_TOKEN }}'\n" > dynamic_run.ps1
             cat extracted_steps.txt >> dynamic_run.ps1
-            echo ">>>> [Windows 翻译官] 原厂表达式在线翻译成功！"
           else
-            if [ "${{ github.event.inputs.target_arch }}" = "all" ]; then
-              echo -e "#!/bin/bash\nexport GITHUB_ENV=\$(mktemp)\nexport GITHUB_OUTPUT=\$(mktemp)\nexport CGO_ENABLED=1\nexport IS_STABLE='false'\nexport GRADLE_OPTS=\"-Xmx4g\"\nexport MATRIX_PLATFORM='${{ github.event.inputs.target_platform }}'\nexport GH_TOKEN='${{ secrets.PAT_TOKEN }}'\nexport GITHUB_REF='refs/heads/${{ env.TARGET_BRANCH }}'\nexport TARGET_BRANCH='${{ env.TARGET_BRANCH }}'\n" > dynamic_run.sh
-            else
-              echo -e "#!/bin/bash\nexport GITHUB_ENV=\$(mktemp)\nexport GITHUB_OUTPUT=\$(mktemp)\nexport CGO_ENABLED=1\nexport IS_STABLE='false'\nexport GRADLE_OPTS=\"-Xmx4g\"\nexport MATRIX_PLATFORM='${{ github.event.inputs.target_platform }}'\nexport MATRIX_ARCH='${{ github.event.inputs.target_arch }}'\nexport GH_TOKEN='${{ secrets.PAT_TOKEN }}'\nexport GITHUB_REF='refs/heads/${{ env.TARGET_BRANCH }}'\nexport TARGET_BRANCH='${{ env.TARGET_BRANCH }}'\n" > dynamic_run.sh
-            fi
+            echo -e "#!/bin/bash\nexport GITHUB_ENV=\$(mktemp)\nexport GITHUB_OUTPUT=\$(mktemp)\nexport CGO_ENABLED=1\nexport GRADLE_OPTS=\"-Xmx4g\"\nexport MATRIX_PLATFORM='${{ matrix.platform }}'\nexport GH_TOKEN='${{ secrets.PAT_TOKEN }}'\nexport GITHUB_REF='refs/heads/${{ env.TARGET_BRANCH }}'\nexport TARGET_BRANCH='${{ env.TARGET_BRANCH }}'\n" > dynamic_run.sh
             cat extracted_steps.txt >> dynamic_run.sh
             chmod +x dynamic_run.sh
-            echo ">>>> [Unix 翻译官] 原厂表达式在线翻译成功！"
           fi
 
-      # 12-A. Unix 跑道执行
-      - name: Execute Dynamic Build Process [Linux / macOS Runner]
-        if: ${{ runner.os != 'Windows' }}
+      # 11. 执行动态构建 (针对 husi 内核补充自动化构建保护)
+      - name: Execute Dynamic Build Process
         shell: bash
         run: |
-          echo "=========================================="
-          echo "🚀 正在使用公开库免费算力，动态重放原厂打包指令..."
-          echo "   目标平台: ${{ github.event.inputs.target_platform }}"
-          echo "=========================================="
-          mkdir -p temp_staging
+          echo "🚀 开始执行平台编译: ${{ matrix.platform }} [Runner Host: $RUNNER_OS]"
           
-          if [ "${{ env.PROJECT_NAME }}" = "husi" ] || [ "${{ env.PROJECT_NAME }}" = "sing-box" ]; then
-            if [ "${{ env.TARGET_PLATFORM }}" = "android" ] && [ ! -f "composeApp/libs/libcore.aar" ]; then
-              echo ">>>> 🔧 检测到底层 libcore.aar 缺失，优先触发核心内核编译..."
+          # husi 底层 Go Core 缺失时的强行补全机制
+          if [ "${{ env.PROJECT_NAME }}" = "husi" ]; then
+            if [ "${{ matrix.platform }}" = "android" ] && [ ! -f "composeApp/libs/libcore.aar" ]; then
+              echo ">>>> 🔧 [husi] 检测到底层 Android libcore.aar 缺失，启动交叉编译..."
               [ -f "buildScript/lib/core.sh" ] && bash buildScript/lib/core.sh || true
             fi
           fi
 
-          if [ "${{ github.event.inputs.target_arch }}" = "all" ]; then
-            ANY_SUCCESS=false
-            for arch in arm64 amd64 arm; do
-              export MATRIX_ARCH=$arch
-              echo ">>>> 🔄 [矩阵编译中] 当前目标架构: $arch"
-          
-              if ./dynamic_run.sh; then
-                ANY_SUCCESS=true
-                echo ">>>> ✅ 架构 $arch 编译成功！暂存产物中..."
-                find . -type f \( -name "*.apk" -o -name "*.aar" -o -name "*.dmg" -o -name "*.pkg" -o -name "*.exe" \) ! -path "./temp_staging/*" ! -path "./unified_dist/*" -exec cp {} temp_staging/ \; 2>/dev/null || true
-              else
-                echo "⚠️ 架构 $arch 编译尝试完毕，检索暂存目录..."
-              fi
-            done
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            pwsh .\dynamic_run.ps1
           else
             ./dynamic_run.sh
           fi
 
-      # 12-B. Windows 跑道执行
-      - name: Execute Dynamic Build Process [Windows Runner]
-        if: ${{ runner.os == 'Windows' }}
-        shell: pwsh
-        run: |
-          .\dynamic_run.ps1
-
-      # 13. 平台精准对号入座脱壳机
-      - name: Flatten and Clean Output Binaries via Platform-Aware Python Filter
+      # 12. 产物提取脱壳机
+      - name: Flatten and Clean Output Binaries
         shell: python
         run: |
-          import os
-          import shutil
-          import re
+          import os, shutil, re
 
           project_name = os.environ.get("PROJECT_NAME", "").lower()
           platform = os.environ.get("TARGET_PLATFORM", "android").lower()
-          
-          root_word = project_name.replace("forandroid", "").replace("for_android", "").replace("-android", "").replace("desktop", "").replace("_merge", "")
-          root_word_clean = re.sub(r'[-_\s]', '', root_word)
           
           target_dir = "unified_dist"
           os.makedirs(target_dir, exist_ok=True)
 
           platform_ext_map = {
               "android": (".apk", ".aab", ".aar"),
-              "macos": (".dmg", ".pkg", ".zip", ".tar.gz"),
+              "macos": (".dmg", ".pkg", ".zip", ".tar.gz", ".zst"),
               "windows": (".exe", ".msi", ".zip"),
-              "linux": (".appimage", ".deb", ".rpm", ".tar.gz", ".zip")
+              "linux": (".appimage", ".deb", ".rpm", ".tar.gz", ".zst")
           }
 
-          allowed_exts = platform_ext_map.get(platform, (".apk", ".aab", ".dmg", ".zip", ".tar.gz", ".aar", ".exe"))
-          ignored_dirs = [".git", ".gradle", "gradle-wrapper", "node_modules", "intermediates", "build-cache", "cache", "tmp", "temp", "mock", "test", "tests", "obj"]
+          allowed_exts = platform_ext_map.get(platform, (".apk", ".dmg", ".exe", ".deb", ".zip", ".zst"))
+          ignored_dirs = [".git", ".gradle", "gradle-wrapper", "node_modules", "intermediates", "build-cache", "tmp", "temp"]
 
-          print(f">>>> 🔍 平台精准滤网激活！目标平台: [{platform}], 允许格式: {allowed_exts}, 匹配字根: [{root_word_clean}]")
+          print(f">>>> 🔍 提取平台 [{platform}] 产物，匹配后缀: {allowed_exts}")
 
-          all_found_files = []
-
+          found_files = []
           for root, dirs, files in os.walk("."):
-              if any(ignored in root.replace("\\", "/").split("/") for ignored in ignored_dirs):
-                  continue
-              if target_dir in root:
-                  continue
+              if any(ignored in root.replace("\\", "/").split("/") for ignored in ignored_dirs): continue
+              if target_dir in root: continue
               for file in files:
                   if file.lower().endswith(allowed_exts):
-                      if platform in ["macos", "windows", "linux"] and file.lower().endswith((".apk", ".aab")):
-                          continue
-                      full_p = os.path.join(root, file)
-                      all_found_files.append((full_p, file))
+                      if platform in ["macos", "windows", "linux"] and file.lower().endswith((".apk", ".aab")): continue
+                      found_files.append(os.path.join(root, file))
 
-          print(f">>>> 📁 [全盘扫描结果] 共发现 {len(all_found_files)} 个符合平台的潜在二进制文件：")
-          for full_p, f in all_found_files:
-              print(f"   - {full_p}")
+          for full_p in found_files:
+              file_name = os.path.basename(full_p)
+              dest_path = os.path.join(target_dir, file_name)
+              shutil.copy2(full_p, dest_path)
+              print(f"-> 🎯 提取成功: {file_name}")
 
-          collected_count = 0
-          for full_p, file in all_found_files:
-              file_clean = re.sub(r'[-_\s]', '', file.lower())
-              is_match = False
-          
-              if root_word_clean in file_clean:
-                  is_match = True
-              elif len(root_word_clean) >= 4 and root_word_clean[:4] in file_clean:
-                  is_match = True
-              elif any(k in file_clean for k in ["release", "unsigned", "installer", "desktop", "mac"]) and any(k in full_p.lower() for k in ["outputs/", "bin/", "dist/", "packages", "libs", "temp_staging", "build/"]):
-                  is_match = True
-          
-              if is_match:
-                  dest_path = os.path.join(target_dir, file)
-                  shutil.copy2(full_p, dest_path)
-                  print(f"-> [💥 平台指纹命中] {file} => 写入 => {target_dir}")
-                  collected_count += 1
-
-          if collected_count == 0:
-              print(">>>> ⚠️ 指纹未直接命中，触发平台保底搜刮机制（Fallback）...")
-              for full_p, file in all_found_files:
-                  dest_path = os.path.join(target_dir, file)
-                  shutil.copy2(full_p, dest_path)
-                  print(f"-> [🛡️ 平台保底搜刮成功] {file} => 写入 => {target_dir}")
-
-      # 14. 联动发布
-      - name: Push and Publish to Public Repo Release Page
+      # 13. 同步发布至 Release 页面
+      - name: Push and Publish to Release Page
         if: ${{ github.event.inputs.upload_to_release == 'true' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -598,38 +446,16 @@ jobs:
         run: |
           if [ -d "unified_dist" ] && [ "$(ls -A unified_dist 2>/dev/null)" ]; then
             CLEAN_BRANCH=$(echo "${{ env.TARGET_BRANCH }}" | tr '/' '-')
+            TAG_NAME="${{ env.PROJECT_NAME }}-${CLEAN_BRANCH}-${{ matrix.platform }}-v${{ github.run_number }}"
           
-            VERSION=$(python3 -c '
-          import os, re
-          files = os.listdir("unified_dist")
-          version = ""
-          for f in files:
-              m = re.search(r"(\d+\.\d+\.\d+(?:-[a-z0-9.]+)?)" , f, re.IGNORECASE)
-              if m:
-                  v = m.group(1)
-                  v = re.sub(r"-(?:arm64|amd64|arm|x86|x86_64|v8a|v7a|unsigned|release|desktop|windows|macos|linux)$", "", v, flags=re.IGNORECASE)
-                  version = v
-                  break
-          print(version)
-          ')
-          
-            if [ -z "$VERSION" ]; then
-              VERSION="${{ github.run_number }}"
-            fi
-          
-            TAG_NAME="${{ env.PROJECT_NAME }}-${CLEAN_BRANCH}-v${VERSION}"
-            echo ">>>> 🚀 生成 Release Tag: $TAG_NAME"
-          
-            gh release create "$TAG_NAME" unified_dist/* --repo "${{ github.repository }}" --title "$TAG_NAME" --notes "Automated smart build from private upstream: ${{ env.TARGET_REPO }} [${{ env.TARGET_BRANCH }}]" --prerelease
-            echo ">>>> 🎉 全线发布成功！"
-          else
-            echo "⚠️ 未找到任何有效编译产物，跳过 Release 发布。"
+            gh release create "$TAG_NAME" unified_dist/* --repo "${{ github.repository }}" --title "$TAG_NAME" --notes "Automated smart build from private upstream: ${{ env.TARGET_REPO }}" --prerelease 2>/dev/null || gh release upload "$TAG_NAME" unified_dist/* --repo "${{ github.repository }}" --clobber
+            echo "🎉 发布完成！"
           fi
 
-      # 15. 备份层：Artifacts 平铺归档
-      - name: Archive and Upload Artifacts
+      # 14. Artifacts 归档
+      - name: Archive Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.PROJECT_NAME }}--${{ env.TARGET_BRANCH }}--${{ github.event.inputs.target_platform }}--${{ github.event.inputs.target_arch }}--Artifacts
+          name: ${{ env.PROJECT_NAME }}--${{ env.TARGET_BRANCH }}--${{ matrix.platform }}--Artifacts
           path: unified_dist
           if-no-files-found: warn
