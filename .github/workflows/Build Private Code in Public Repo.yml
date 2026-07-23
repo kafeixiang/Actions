@@ -89,7 +89,7 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
 
 jobs:
-  # 1. 动态生成平台与 Runner 映射矩阵
+  # 1. 动态生成平台与 Runner 映射矩阵 (针对 husi 强行锁定 Linux Runner 交叉编译)
   setup_matrix:
     runs-on: ubuntu-latest
     outputs:
@@ -101,9 +101,9 @@ jobs:
           MODE="${{ github.event.inputs.build_mode }}"
           PLAT="${{ github.event.inputs.target_platform }}"
           
-          # husi 项目全平台统一在 Linux (ubuntu-24.04) 上执行交叉编译
           get_runner() {
             local p="$1"
+            # 坚定原则：husi 项目不论选哪个系统，全部在 Linux (ubuntu-24.04) 上交叉编译！
             if echo "$REPO" | grep -q "husi"; then
               echo "ubuntu-24.04"
             elif echo "$REPO" | grep -q "v2rayN"; then
@@ -159,7 +159,6 @@ jobs:
             exit 1
           fi
 
-          # 架构兜底逻辑：若选了 all，桌面端架构兜底设置为 amd64，避免 Gradle 传空
           if [ "$ARCH" = "all" ] || [ -z "$ARCH" ]; then
             TARGET_ARCH_ENV="amd64"
           else
@@ -185,7 +184,14 @@ jobs:
           submodules: recursive
           fetch-depth: 0
 
-      # 3. 剧本锁定与环境参数/Zig 检测
+      # 3. 补全 Linux 下 CGO 交叉编译 Windows 所需的工具链 (补全 mingw-w64 与 pthread 头文件)
+      - name: Install Windows Cross-Compile Toolchain (MinGW-w64)
+        if: runner.os == 'Linux' && (matrix.platform == 'windows' || env.PROJECT_NAME == 'husi')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mingw-w64 libarchive-tools pkg-config
+
+      # 4. 剧本锁定与环境参数精准路由
       - name: Select Compilation Workflow and Extract Versions
         id: extract_env
         shell: bash
@@ -202,11 +208,24 @@ jobs:
           
           echo ">>>> 📡 正在针对 $PROJECT [$PLAT] 进行智能工作流配置查找..."
           
+          # 针对 husi 项目进行严格的平台与脚本路由隔离（严禁 Windows / Linux 误入 mac.yml）
           if [ "$PROJECT" = "husi" ]; then
-            if [ "$PLAT" = "macos" ] || [ "$PLAT" = "windows" ] || [ "$PLAT" = "linux" ] || [ "$MODE" = "mac" ] || [ "$MODE" = "desktop" ]; then
+            if [ "$PLAT" = "macos" ] || [ "$MODE" = "mac" ]; then
+              if [ -f ".github/workflows/mac.yml" ]; then CHOSEN_WF=".github/workflows/mac.yml";
+              elif [ -f ".github/workflows/desktop.yml" ]; then CHOSEN_WF=".github/workflows/desktop.yml";
+              elif [ -f ".github/workflows/release.yml" ]; then CHOSEN_WF=".github/workflows/release.yml";
+              fi
+            elif [ "$PLAT" = "windows" ] || [ "$PLAT" = "linux" ] || [ "$MODE" = "desktop" ]; then
               if [ -f ".github/workflows/desktop.yml" ]; then CHOSEN_WF=".github/workflows/desktop.yml";
               elif [ -f ".github/workflows/desktop.yaml" ]; then CHOSEN_WF=".github/workflows/desktop.yaml";
-              elif [ -f ".github/workflows/mac.yml" ]; then CHOSEN_WF=".github/workflows/mac.yml";
+              elif [ -f ".github/workflows/release.yml" ]; then CHOSEN_WF=".github/workflows/release.yml";
+              elif [ -f ".github/workflows/build.yml" ]; then CHOSEN_WF=".github/workflows/build.yml";
+              fi
+            elif [ "$PLAT" = "android" ]; then
+              if [ "$MODE" = "nightly" ] && [ -f ".github/workflows/nightly.yml" ]; then CHOSEN_WF=".github/workflows/nightly.yml";
+              elif [ -f ".github/workflows/release.yml" ]; then CHOSEN_WF=".github/workflows/release.yml";
+              elif [ -f ".github/workflows/build.yml" ]; then CHOSEN_WF=".github/workflows/build.yml";
+              elif [ -f ".github/workflows/build.yaml" ]; then CHOSEN_WF=".github/workflows/build.yaml";
               fi
             fi
           fi
@@ -262,21 +281,21 @@ jobs:
           echo "DYNAMIC_DOTNET=$DOTNET_VER" >> $GITHUB_ENV
           echo "DYNAMIC_FLUTTER=$FLUTTER_VER" >> $GITHUB_ENV
 
-      # 4. 递归拉取底层子模块
+      # 5. 递归拉取底层子模块
       - name: Clone Submodules
         shell: bash
         run: |
           git config --global url."https://${{ secrets.PAT_TOKEN }}@github.com/".insteadOf "https://github.com/"
           git submodule update --init --recursive
 
-      # 5. 配置 Zig 环境（针对 husi/CGO 交叉编译必须）
+      # 6. 配置 Zig 环境（husi 交叉编译全平台必需）
       - name: Set up Zig Toolchain
         if: env.HAS_ZIG == 'true' || env.PROJECT_NAME == 'husi'
         uses: mlugg/setup-zig@v2
         with:
           version: ${{ env.DYNAMIC_ZIG || '0.13.0' }}
 
-      # 6. 配置 Java 环境
+      # 7. 配置 Java 环境
       - name: Set up Java Runtime
         if: env.PROJECT_NAME != 'v2rayN'
         uses: actions/setup-java@v4
@@ -284,21 +303,21 @@ jobs:
           java-version: ${{ env.DYNAMIC_JAVA }}
           distribution: 'temurin'
 
-      # 7. 配置 Go 环境
+      # 8. 配置 Go 环境
       - name: Set up Go Runtime
         uses: actions/setup-go@v5
         with:
           go-version: ${{ env.DYNAMIC_GO }}
           cache: true
 
-      # 8. 挂载 Gradle 编译缓存
+      # 9. 挂载 Gradle 编译缓存
       - name: Setup Gradle Cache for Fast Build
         if: env.PROJECT_NAME != 'v2rayN' && env.PROJECT_NAME != 'FlClash'
         uses: gradle/actions/setup-gradle@v3
         with:
           cache-read-only: false
 
-      # 9. 针对 Android 自动补充 SDK 映射
+      # 10. 针对 Android 自动补充 SDK 映射
       - name: Prepare Local Properties
         if: matrix.platform == 'android'
         shell: bash
@@ -310,7 +329,7 @@ jobs:
             echo "ANDROID_NDK_HOME=$NDK_PATH" >> $GITHUB_ENV
           fi
 
-      # 10. YAML 步阶解析与子 Shell 隔离打包生成器 (注入 MATRIX_ARCH 保底参数)
+      # 11. YAML 步阶解析与智能变量替换引擎 (强力保证不留下任何空参)
       - name: High-Fidelity Translate and Generate Build Script
         shell: bash
         run: |
@@ -329,18 +348,35 @@ jobs:
           jobs = wf.get("jobs", {}) if isinstance(wf, dict) else {}
           extracted_steps = []
 
-          mapping = {
-              "matrix.platform": target_platform,
-              "matrix.arch": target_arch,
-              "matrix.target": target_arch,
-              "github.token": "$GH_TOKEN",
-              "github.ref": "$GITHUB_REF",
-              "github.ref_name": "$TARGET_BRANCH",
-              "steps.sdk.outputs.path": "/home/runner/cross-jdk/include",
-              "steps.darwin-sdk.outputs.path": "/home/runner/MacOSX.sdk"
-          }
-
           pat = r"\$" + r"\{\{\s*(.*?)\s*\}\}"
+
+          def smart_replace(match):
+              expr = match.group(1).strip()
+              expr_lower = expr.lower()
+
+              if "matrix.platform" in expr_lower or "target_platform" in expr_lower:
+                  return target_platform
+
+              if any(x in expr_lower for x in ["arch", "target"]):
+                  return target_arch
+
+              if "darwin" in expr_lower or "macosx" in expr_lower or "darwin-sdk" in expr_lower:
+                  return "/home/runner/MacOSX.sdk"
+
+              if "sdk.outputs" in expr_lower or "jdk" in expr_lower:
+                  return "/home/runner/cross-jdk/include"
+
+              if "token" in expr_lower or "secret" in expr_lower:
+                  return "$GH_TOKEN"
+
+              if "ref_name" in expr_lower or "branch" in expr_lower:
+                  return "$TARGET_BRANCH"
+
+              if "ref" in expr_lower:
+                  return "$GITHUB_REF"
+
+              clean_v = re.sub(r'[^a-zA-Z0-9_]', '_', expr).upper()
+              return f"${clean_v}"
 
           for job_key, job_val in jobs.items():
               if not isinstance(job_val, dict): continue
@@ -360,12 +396,7 @@ jobs:
                   step_lines = []
                   lines = run_cmd.splitlines()
                   for line in lines:
-                      def repl(m):
-                          k = m.group(1).strip()
-                          return mapping.get(k, m.group(0))
-          
-                      line = re.sub(pat, repl, line)
-                      line = re.sub(r"\$\{\{\s*.*?\s*\}\}", "", line)
+                      line = re.sub(pat, smart_replace, line)
                       step_lines.append(line)
           
                   if step_lines:
@@ -385,7 +416,7 @@ jobs:
             chmod +x dynamic_run.sh
           fi
 
-      # 11. 执行动态构建 (针对 husi 内核补充自动化构建保护)
+      # 12. 执行动态构建
       - name: Execute Dynamic Build Process
         shell: bash
         run: |
@@ -404,7 +435,7 @@ jobs:
             ./dynamic_run.sh
           fi
 
-      # 12. 产物提取脱壳机
+      # 13. 产物提取脱壳机
       - name: Flatten and Clean Output Binaries
         shell: python
         run: |
@@ -443,7 +474,7 @@ jobs:
               shutil.copy2(full_p, dest_path)
               print(f"-> 🎯 提取成功: {file_name}")
 
-      # 13. 同步发布至 Release 页面
+      # 14. 同步发布至 Release 页面
       - name: Push and Publish to Release Page
         if: ${{ github.event.inputs.upload_to_release == 'true' }}
         env:
@@ -458,7 +489,7 @@ jobs:
             echo "🎉 发布完成！"
           fi
 
-      # 14. Artifacts 归档
+      # 15. Artifacts 归档
       - name: Archive Artifacts
         uses: actions/upload-artifact@v4
         with:
