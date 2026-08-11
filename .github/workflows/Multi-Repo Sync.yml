@@ -71,7 +71,7 @@ jobs:
           - name: "Exclave"
             fork: "kafeixiang/Exclave"
             upstream: "https://github.com/dyhkwong/Exclave.git"
-            mappings: "dev:dev-2"
+            mappings: "dev:dev-2 dev:dev-UI"
 
           - name: "husi"
             fork: "kafeixiang/husi"
